@@ -30,7 +30,7 @@
 #include <linux/sched.h>
 #include <linux/parser.h>
 #include <linux/idr.h>
-#include <net/9p/9p.h>
+#include "9p.h"
 
 /**
  * struct p9_idpool - per-connection accounting for tag idpool

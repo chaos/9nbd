@@ -39,9 +39,9 @@
 #include <linux/inet.h>
 #include <linux/idr.h>
 #include <linux/file.h>
-#include <net/9p/9p.h>
+#include "9p.h"
 #include <linux/parser.h>
-#include <net/9p/transport.h>
+#include "transport.h"
 #include <linux/scatterlist.h>
 #include <linux/virtio.h>
 #include <linux/virtio_9p.h>

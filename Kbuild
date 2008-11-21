@@ -1,4 +1,4 @@
-EXTRA_CFLAGS := -I$(src)/include -include $(src)/external-module-compat.h
+EXTRA_CFLAGS := -I$(src)/include/net/9p -I$(src)/include -include $(src)/external-module-compat.h
 #obj-m := virtio.o virtio_pci.o virtio_ring.o 9pnet.o 9pnet_virtio.o 9p.o
 obj-m := 9pnet.o 9p.o
 

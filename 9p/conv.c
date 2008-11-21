@@ -30,7 +30,7 @@
 #include <linux/sched.h>
 #include <linux/idr.h>
 #include <linux/uaccess.h>
-#include <net/9p/9p.h>
+#include "9p.h"
 
 /*
  * Buffer to help with string parsing

@@ -25,7 +25,7 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/idr.h>
-#include <net/9p/9p.h>
+#include "9p.h"
 
 #ifdef CONFIG_NET_9P_DEBUG
 

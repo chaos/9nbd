@@ -31,10 +31,10 @@
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/uaccess.h>
-#include <net/9p/9p.h>
+#include "9p.h"
 #include <linux/parser.h>
-#include <net/9p/transport.h>
-#include <net/9p/client.h>
+#include "transport.h"
+#include "client.h"
 
 static struct p9_fid *p9_fid_create(struct p9_client *clnt);
 static void p9_fid_destroy(struct p9_fid *fid);

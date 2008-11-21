@@ -34,8 +34,8 @@
 #include <linux/list.h>
 #include <asm/uaccess.h>
 #include <linux/idr.h>
-#include <net/9p/9p.h>
-#include <net/9p/client.h>
+#include "9p.h"
+#include "client.h"
 
 #include "v9fs.h"
 #include "v9fs_vfs.h"

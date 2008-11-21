@@ -26,10 +26,10 @@
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <net/9p/9p.h>
+#include "9p.h"
 #include <linux/fs.h>
 #include <linux/parser.h>
-#include <net/9p/transport.h>
+#include "transport.h"
 #include <linux/list.h>
 
 #ifdef CONFIG_NET_9P_DEBUG
@@ -96,7 +96,7 @@ struct p9_trans_module *v9fs_default_trans(void)
 }
 EXPORT_SYMBOL(v9fs_default_trans);
 
-extern void p9_trans_fd_init(void);
+extern int p9_trans_fd_init(void);
 
 /**
  * v9fs_init - Initialize module

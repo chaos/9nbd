@@ -38,8 +38,8 @@
 #include <linux/idr.h>
 #include <linux/file.h>
 #include <linux/parser.h>
-#include <net/9p/9p.h>
-#include <net/9p/transport.h>
+#include "9p.h"
+#include "transport.h"
 
 #define P9_PORT 564
 #define MAX_SOCK_BUF (64*1024)
@@ -1285,7 +1285,7 @@ static int p9_socket_open(struct p9_trans *trans, struct socket *csocket)
 	int fd, ret;
 
 	csocket->sk->sk_allocation = GFP_NOIO;
-	fd = sock_map_fd(csocket);
+	fd = sock_map_fd(csocket, 0);
 	if (fd < 0) {
 		P9_EPRINTK(KERN_ERR, "p9_socket_open: failed to map fd\n");
 		return fd;
