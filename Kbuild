@@ -9,10 +9,9 @@ obj-m := 9pnet.o 9p.o
 9pnet-objs := \
         9p/mod.o \
         9p/client.o \
-        9p/conv.o \
         9p/error.o \
-        9p/fcprint.o \
         9p/util.o \
+	9p/protocol.o\
         9p/trans_fd.o \
 
 9p-objs := v9fs/vfs_super.o v9fs/vfs_inode.o v9fs/vfs_addr.o v9fs/vfs_file.o \

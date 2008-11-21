@@ -30,8 +30,8 @@
 #include <linux/parser.h>
 #include <linux/idr.h>
 #include "9p.h"
-#include "transport.h"
 #include "client.h"
+#include "transport.h"
 #include "v9fs.h"
 #include "v9fs_vfs.h"
 
@@ -55,7 +55,7 @@ enum {
 	Opt_err
 };
 
-static match_table_t tokens = {
+static const match_table_t tokens = {
 	{Opt_debug, "debug=%x"},
 	{Opt_dfltuid, "dfltuid=%u"},
 	{Opt_dfltgid, "dfltgid=%u"},
@@ -68,31 +68,6 @@ static match_table_t tokens = {
 	{Opt_access, "access=%s"},
 	{Opt_err, NULL}
 };
-
-#ifndef match_strlcpy
-/**
- * match_strlcpy: - Copy the characters from a substring_t to a sized buffer
- * @dest: where to copy to
- * @src: &substring_t to copy
- * @size: size of destination buffer
- *
- * Description: Copy the characters in &substring_t @src to the
- * c-style string @dest.  Copy no more than @size - 1 characters, plus
- * the terminating NUL.  Return length of @src.
- */
-size_t match_strlcpy(char *dest, const substring_t *src, size_t size)
-{
-        size_t ret = src->to - src->from;
-
-        if (size) {
-                size_t len = ret >= size ? size - 1 : ret;
-                memcpy(dest, src->from, len);
-                dest[len] = '\0';
-        }
-        return ret;
-}
-EXPORT_SYMBOL(match_strlcpy);
-#endif
 
 /**
  * v9fs_parse_options - parse mount options into session structure
@@ -259,7 +234,7 @@ struct p9_fid *v9fs_session_init(struct v9fs_session_info *v9ses,
 	if (!v9ses->clnt->dotu)
 		v9ses->flags &= ~V9FS_EXTENDED;
 
-	v9ses->maxdata = v9ses->clnt->msize;
+	v9ses->maxdata = v9ses->clnt->msize - P9_IOHDRSZ;
 
 	/* for legacy mode, fall back to V9FS_ACCESS_ANY */
 	if (!v9fs_extended(v9ses) &&
