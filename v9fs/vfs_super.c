@@ -113,8 +113,8 @@ static int v9fs_get_sb(struct file_system_type *fs_type, int flags,
 	struct v9fs_session_info *v9ses = NULL;
 	struct p9_wstat *st = NULL;
 	int mode = S_IRWXUGO | S_ISVTX;
-	uid_t uid = current->fsuid;
-	gid_t gid = current->fsgid;
+	uid_t uid = current_fsuid();
+	gid_t gid = current_fsgid();
 	struct p9_fid *fid;
 	int retval = 0;
 
@@ -168,8 +168,9 @@ static int v9fs_get_sb(struct file_system_type *fs_type, int flags,
 	p9stat_free(st);
 	kfree(st);
 
-P9_DPRINTK(P9_DEBUG_VFS, " return simple set mount\n");
-	return simple_set_mnt(mnt, sb);
+P9_DPRINTK(P9_DEBUG_VFS, " simple set mount, return 0\n");
+	simple_set_mnt(mnt, sb);
+	return 0;
 
 release_sb:
 	if (sb) {
