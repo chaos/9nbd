@@ -134,6 +134,7 @@ static void req_done(struct virtqueue *vq)
 		P9_DPRINTK(P9_DEBUG_TRANS, ": rc %p\n", rc);
 		P9_DPRINTK(P9_DEBUG_TRANS, ": lookup tag %d\n", rc->tag);
 		req = p9_tag_lookup(chan->client, rc->tag);
+		req->status = REQ_STATUS_RCVD;
 		p9_client_cb(chan->client, req);
 	}
 }
@@ -245,7 +246,7 @@ static int p9_virtio_probe(struct virtio_device *vdev)
 	chan->vdev = vdev;
 
 	/* We expect one virtqueue, for requests. */
-	chan->vq = vdev->config->find_vq(vdev, 0, req_done);
+	chan->vq = virtio_find_single_vq(vdev, req_done, "requests");
 	if (IS_ERR(chan->vq)) {
 		err = PTR_ERR(chan->vq);
 		goto out_free_vq;
@@ -260,7 +261,7 @@ static int p9_virtio_probe(struct virtio_device *vdev)
 	return 0;
 
 out_free_vq:
-	vdev->config->del_vq(chan->vq);
+	vdev->config->del_vqs(vdev);
 fail:
 	mutex_lock(&virtio_9p_lock);
 	chan_index--;
@@ -331,7 +332,7 @@ static void p9_virtio_remove(struct virtio_device *vdev)
 	BUG_ON(chan->inuse);
 
 	if (chan->initialized) {
-		vdev->config->del_vq(chan->vq);
+		vdev->config->del_vqs(vdev);
 		chan->initialized = false;
 	}
 }

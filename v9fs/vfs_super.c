@@ -173,10 +173,7 @@ P9_DPRINTK(P9_DEBUG_VFS, " simple set mount, return 0\n");
 	return 0;
 
 release_sb:
-	if (sb) {
-		up_write(&sb->s_umount);
-		deactivate_super(sb);
-	}
+	deactivate_locked_super(sb);
 
 free_stat:
 	kfree(st);
@@ -230,8 +227,9 @@ static int v9fs_show_options(struct seq_file *m, struct vfsmount *mnt)
 static void
 v9fs_umount_begin(struct super_block *sb)
 {
-	struct v9fs_session_info *v9ses = sb->s_fs_info;
+	struct v9fs_session_info *v9ses;
 
+	v9ses = sb->s_fs_info;
 	v9fs_session_cancel(v9ses);
 }
 
