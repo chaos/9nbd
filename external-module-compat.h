@@ -6,6 +6,11 @@
 #include <linux/types.h>
 #include <linux/scatterlist.h>
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+
+#define current_fsuid()  (current->fsuid)
+#define current_fsgid()  (current->fsgid)
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 
 struct virtio_device_id {
@@ -64,4 +69,5 @@ static inline void * __must_check krealloc(const void *data, size_t size,
 #endif
 #endif
 
+#endif
 #endif
