@@ -5,6 +5,18 @@
 #include <linux/version.h>
 #include <linux/types.h>
 #include <linux/scatterlist.h>
+#include <linux/fs.h>
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
+
+/* This is a really kludgy way to make it work. To see what
+   deactivate_locked_super is all about, check the commit
+   74dbbdd7fdc11763f4698d2f3e684cf4446951e6 by Al Viro */
+static inline void deactivate_locked_super(struct super_block *s)
+{
+        up_write(&s->s_umount);
+        deactivate_super(s);
+}
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 
@@ -69,5 +81,6 @@ static inline void * __must_check krealloc(const void *data, size_t size,
 #endif
 #endif
 
+#endif
 #endif
 #endif
