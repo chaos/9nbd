@@ -1,10 +1,15 @@
 EXTRA_CFLAGS := -I$(src)/include/net/9p -I$(src)/include -include $(src)/external-module-compat.h
-#obj-m := virtio.o virtio_pci.o virtio_ring.o 9pnet.o 9pnet_virtio.o 9p.o
 obj-m := 9pnet.o 9p.o
 
-#virtio-objs := virtio/virtio.o
-#virtio_ring-objs := virtio/virtio_ring.o
-#virtio_pci-objs := virtio/virtio_pci.o
+ifeq ($(FSCACHE), 1)
+        EXTRA_CFLAGS+="-DCONFIG_9P_FSCACHE"
+        CONFIG_9P_FSCACHE=y
+endif
+
+ifeq ($(DEBUG9P), 1)
+        EXTRA_CFLAGS+="-DCONFIG_NET_9P_DEBUG"
+        CONFIG_NET_9P_DEBUG=y
+endif
 
 9pnet-objs := \
         9p/mod.o \
