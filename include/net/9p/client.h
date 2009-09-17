@@ -77,7 +77,6 @@ enum p9_req_status_t {
  * struct p9_req_t - request slots
  * @status: status of this request slot
  * @t_err: transport error
- * @flush_tag: tag of request being flushed (for flush requests)
  * @wq: wait_queue for the client to block on for this request
  * @tc: the request fcall structure
  * @rc: the response fcall structure
@@ -98,7 +97,6 @@ enum p9_req_status_t {
 struct p9_req_t {
 	int status;
 	int t_err;
-	u16 flush_tag;
 	wait_queue_head_t *wq;
 	struct p9_fcall *tc;
 	struct p9_fcall *rc;
