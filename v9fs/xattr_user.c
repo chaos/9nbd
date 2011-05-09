@@ -40,6 +40,7 @@ static int v9fs_xattr_user_get(struct dentry *dentry, const char *name,
 	memcpy(full_name, XATTR_USER_PREFIX, prefix_len);
 	memcpy(full_name+prefix_len, name, name_len);
 	full_name[prefix_len + name_len] = '\0';
+
 	retval = v9fs_xattr_get(dentry, full_name, buffer, size);
 	kfree(full_name);
 	return retval;
@@ -66,6 +67,7 @@ static int v9fs_xattr_user_set(struct dentry *dentry, const char *name,
 	memcpy(full_name, XATTR_USER_PREFIX, prefix_len);
 	memcpy(full_name + prefix_len, name, name_len);
 	full_name[prefix_len + name_len] = '\0';
+
 	retval = v9fs_xattr_set(dentry, full_name, value, size, flags);
 	kfree(full_name);
 	return retval;

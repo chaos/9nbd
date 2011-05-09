@@ -94,6 +94,9 @@ static int v9fs_cached_dentry_delete(const struct dentry *dentry)
  *
  */
 
+#if !RHEL6_COMPAT
+static
+#endif
 void v9fs_dentry_release(struct dentry *dentry)
 {
 	struct v9fs_dentry *dent;
