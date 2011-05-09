@@ -31,7 +31,7 @@
 #include <linux/list.h>
 #include <linux/jhash.h>
 #include <linux/errno.h>
-#include "9p.h"
+#include <net/9p/9p.h>
 
 /**
  * struct errormap - map string errors from Plan 9 to Linux numeric ids

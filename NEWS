@@ -1,0 +1,16 @@
+In v9fs-2.6.38.rc2-5:
+* Fix error in /etc/depmod.d/kmod-v9fs.conf
+
+In v9fs-2.6.38.rc2-4:
+* Repackage as Red Hat kernel_module_package
+
+In v9fs-2.6.38.rc2-3:
+* Fix problem with cached negative dentries.
+
+In v9fs-2.6.38.rc2-2:
+* Fix fid leakage problem (unclunked fids on console at umount time).
+
+In v9fs-2.6.38.rc2-1:
+* Resync with latest upstream kernel and backport to rhel6.
+  This version includes upstream 9P2000.L but not aread/write extensions.
+

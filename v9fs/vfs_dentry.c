@@ -34,8 +34,9 @@
 #include <linux/namei.h>
 #include <linux/idr.h>
 #include <linux/sched.h>
-#include "9p.h"
-#include "client.h"
+#include <linux/slab.h>
+#include <net/9p/9p.h>
+#include <net/9p/client.h>
 
 #include "v9fs.h"
 #include "v9fs_vfs.h"
@@ -50,7 +51,11 @@
  *
  */
 
+#if RHEL6_COMPAT
 static int v9fs_dentry_delete(struct dentry *dentry)
+#else
+static int v9fs_dentry_delete(const struct dentry *dentry)
+#endif
 {
 	P9_DPRINTK(P9_DEBUG_VFS, " dentry: %s (%p)\n", dentry->d_name.name,
 									dentry);
@@ -67,7 +72,11 @@ static int v9fs_dentry_delete(struct dentry *dentry)
  *
  */
 
+#if RHEL6_COMPAT
 static int v9fs_cached_dentry_delete(struct dentry *dentry)
+#else
+static int v9fs_cached_dentry_delete(const struct dentry *dentry)
+#endif
 {
 	struct inode *inode = dentry->d_inode;
 	P9_DPRINTK(P9_DEBUG_VFS, " dentry: %s (%p)\n", dentry->d_name.name,

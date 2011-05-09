@@ -26,11 +26,15 @@
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include "9p.h"
+#include <net/9p/9p.h>
 #include <linux/fs.h>
+#if RHEL6_COMPAT
+/* included by rhel6-compat.h but not protected against multiple includes */
+#else
 #include <linux/parser.h>
-#include "client.h"
-#include "transport.h"
+#endif
+#include <net/9p/client.h>
+#include <net/9p/transport.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 
