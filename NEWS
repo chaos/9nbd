@@ -1,3 +1,6 @@
+In v9fs-2.6.38.5-1:
+* Resync with 2.6.3.5 (no change!), minor cleanup to rhel6 changes
+
 In v9fs-2.6.38.rc2-5:
 * Fix error in /etc/depmod.d/kmod-v9fs.conf
 
