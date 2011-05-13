@@ -1,3 +1,6 @@
+In v9fs-2.6.38.5-2:
+* Pull in upstream upstream fix for memory leak in .L readdir
+
 In v9fs-2.6.38.5-1:
 * Resync with 2.6.3.5 (no change!), minor cleanup to rhel6 changes
 
