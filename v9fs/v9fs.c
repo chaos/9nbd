@@ -385,7 +385,7 @@ void v9fs_session_close(struct v9fs_session_info *v9ses)
  */
 
 void v9fs_session_cancel(struct v9fs_session_info *v9ses) {
-	P9_DPRINTK(P9_DEBUG_ERROR, "cancel session %p\n", v9ses);
+	//P9_DPRINTK(P9_DEBUG_ERROR, "cancel session %p\n", v9ses);
 	p9_client_disconnect(v9ses->clnt);
 }
 
@@ -398,7 +398,7 @@ void v9fs_session_cancel(struct v9fs_session_info *v9ses) {
 
 void v9fs_session_begin_cancel(struct v9fs_session_info *v9ses)
 {
-	P9_DPRINTK(P9_DEBUG_ERROR, "begin cancel session %p\n", v9ses);
+	//P9_DPRINTK(P9_DEBUG_ERROR, "begin cancel session %p\n", v9ses);
 	p9_client_begin_disconnect(v9ses->clnt);
 }
 

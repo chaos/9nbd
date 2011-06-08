@@ -194,7 +194,7 @@ static void p9_conn_cancel(struct p9_conn *m, int err)
 	unsigned long flags;
 	LIST_HEAD(cancel_list);
 
-	P9_DPRINTK(P9_DEBUG_ERROR, "mux %p err %d\n", m, err);
+	//P9_DPRINTK(P9_DEBUG_ERROR, "mux %p err %d\n", m, err);
 
 	spin_lock_irqsave(&m->client->lock, flags);
 
