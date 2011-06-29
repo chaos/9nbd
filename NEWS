@@ -1,3 +1,6 @@
+In v9fs-2.6.38.5-4:
+* Allow server to set statfs f_type rather than hardwiring V9FS_MAGIC
+
 In v9fs-2.6.38.5-3:
 * Comment out two non-error console log messages when DEBUG_ERROR is enabled.
 * Fix incorrect msize calculation.
