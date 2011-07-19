@@ -1,3 +1,7 @@
+In v9fs-2.6.38.5-5:
+* backport fs/9p: Fid is not valid after a failed clunk [Aneesh Kumar K.V]
+* build 9pnet_rmda module
+
 In v9fs-2.6.38.5-4:
 * Allow server to set statfs f_type rather than hardwiring V9FS_MAGIC
 

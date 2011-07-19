@@ -38,7 +38,11 @@
 #include <linux/inet.h>
 #include <linux/idr.h>
 #include <linux/file.h>
+#if RHEL6_COMPAT
+/* included by rhel6-compat.h but not protected against multiple includes */
+#else
 #include <linux/parser.h>
+#endif
 #include <linux/semaphore.h>
 #include <linux/slab.h>
 #include <net/9p/9p.h>

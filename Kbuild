@@ -7,7 +7,7 @@ EXTRA_CFLAGS := \
 	-include $(src)/include/net/9p/client.h \
 	-include $(src)/include/net/9p/transport.h
 
-obj-m := 9pnet.o 9p.o
+obj-m := 9pnet.o 9pnet_rdma.o 9p.o
 
 # CONFIG_NET_9P
 # CONFIG_NET_9P_VIRTIO
@@ -21,6 +21,12 @@ obj-m := 9pnet.o 9p.o
         9p/util.o \
 	9p/protocol.o\
         9p/trans_fd.o
+
+9pnet_rdma-objs := \
+	9p/trans_rdma.o
+
+9pnet_virtio-objs := \
+	9p/trans_virtio.o
 
 # CONFIG_9P_FS
 # CONFIG_9P_FSCACHE
