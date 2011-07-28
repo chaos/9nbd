@@ -1,3 +1,6 @@
+In v9fs-2.6.38.5-6:
+* Use protocol-defined value for lock/getlock 'type' field.
+
 In v9fs-2.6.38.5-5:
 * backport fs/9p: Fid is not valid after a failed clunk [Aneesh Kumar K.V]
 * build 9pnet_rmda module
