@@ -478,10 +478,6 @@ struct p9_iattr_dotl {
 #define P9_LOCK_FLAGS_BLOCK 1
 #define P9_LOCK_FLAGS_RECLAIM 2
 
-#define P9_LOCK_TYPE_RDLCK 97
-#define P9_LOCK_TYPE_WRLCK 98
-#define P9_LOCK_TYPE_UNLCK 99
-
 /* struct p9_flock: POSIX lock structure
  * @type - type of lock
  * @flags - lock flags
