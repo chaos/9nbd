@@ -1,3 +1,7 @@
+In v9fs-2.6.38.5-7:
+* Update for RHEL 6.3 kernel
+* Revert protocol-defined value for lock/getlock 'type' field.
+
 In v9fs-2.6.38.5-6:
 * Use protocol-defined value for lock/getlock 'type' field.
 
