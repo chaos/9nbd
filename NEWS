@@ -1,4 +1,7 @@
-In v9fs-2.6.38.5-7:
+In v9fs-2.6.38.5-8:
+* Temporarily drop 9pnet_rdma until it can be updated for 6.3
+
+In v9fs-2.6.38.5-7 (do not use - did not build):
 * Update for RHEL 6.3 kernel
 * Revert protocol-defined value for lock/getlock 'type' field.
 
