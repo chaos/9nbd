@@ -1,7 +1,7 @@
 #ifndef _RHEL6_COMPAT_H
 #define _RHEL6_COMPAT_H
 
-/* Tested with 2.6.32-71.7.1.el6 */
+/* Tested with RHEL 6.3 (2.6.32-204) */
 
 /* use when changing the code is unavoidable */
 #define RHEL6_COMPAT 1
@@ -53,13 +53,6 @@ void setattr_copy(struct inode *inode, const struct iattr *attr)
                         mode &= ~S_ISGID;
                 inode->i_mode = mode;
         }
-}
-
-/* missing - copied from fs/inode.c in 2.6.38-rc2 */
-static __inline__
-void ihold(struct inode *inode)
-{
-        WARN_ON(atomic_inc_return(&inode->i_count) < 2);
 }
 
 #endif /* _RHEL6_COMPAT_H */
