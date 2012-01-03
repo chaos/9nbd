@@ -155,7 +155,7 @@ static void req_done(struct virtqueue *vq)
 					rc->tag);
 			req = p9_tag_lookup(chan->client, rc->tag);
 			req->status = REQ_STATUS_RCVD;
-			p9_client_cb(chan->client, req);
+			req->client_cb(chan->client, req, req->aux);
 		} else {
 			spin_unlock_irqrestore(&chan->lock, flags);
 		}

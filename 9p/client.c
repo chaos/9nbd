@@ -227,12 +227,6 @@ static struct p9_req_t *p9_tag_alloc(struct p9_client *c, u16 tag)
 
 	req = &c->reqs[row][col];
 	if (!req->tc) {
-		req->wq = kmalloc(sizeof(wait_queue_head_t), GFP_KERNEL);
-		if (!req->wq) {
-			printk(KERN_ERR "Couldn't grow tag array\n");
-			return ERR_PTR(-ENOMEM);
-		}
-		init_waitqueue_head(req->wq);
 		req->tc = kmalloc(sizeof(struct p9_fcall)+c->msize,
 								GFP_KERNEL);
 		req->rc = kmalloc(sizeof(struct p9_fcall)+c->msize,
@@ -241,9 +235,7 @@ static struct p9_req_t *p9_tag_alloc(struct p9_client *c, u16 tag)
 			printk(KERN_ERR "Couldn't grow tag array\n");
 			kfree(req->tc);
 			kfree(req->rc);
-			kfree(req->wq);
 			req->tc = req->rc = NULL;
-			req->wq = NULL;
 			return ERR_PTR(-ENOMEM);
 		}
 		req->tc->sdata = (char *) req->tc + sizeof(struct p9_fcall);
@@ -257,6 +249,8 @@ static struct p9_req_t *p9_tag_alloc(struct p9_client *c, u16 tag)
 
 	req->tc->tag = tag-1;
 	req->status = REQ_STATUS_ALLOC;
+	req->client_cb = NULL;
+	req->aux = NULL;
 
 	return &c->reqs[row][col];
 }
@@ -343,7 +337,6 @@ static void p9_tag_cleanup(struct p9_client *c)
 	/* free requests associated with tags */
 	for (row = 0; row < (c->max_tag/P9_ROW_MAXTAG); row++) {
 		for (col = 0; col < P9_ROW_MAXTAG; col++) {
-			kfree(c->reqs[row][col].wq);
 			kfree(c->reqs[row][col].tc);
 			kfree(c->reqs[row][col].rc);
 		}
@@ -375,13 +368,12 @@ static void p9_free_req(struct p9_client *c, struct p9_req_t *r)
  * req: request received
  *
  */
-void p9_client_cb(struct p9_client *c, struct p9_req_t *req)
+static void p9_client_cb(struct p9_client *c, struct p9_req_t *req, void *aux)
 {
 	P9_DPRINTK(P9_DEBUG_MUX, " tag %d\n", req->tc->tag);
-	wake_up(req->wq);
+	wake_up((wait_queue_head_t *)aux);
 	P9_DPRINTK(P9_DEBUG_MUX, "wakeup: %d\n", req->tc->tag);
 }
-EXPORT_SYMBOL(p9_client_cb);
 
 /**
  * p9_parse_header - parse header arguments out of a packet
@@ -550,6 +542,7 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 	struct p9_req_t *req;
 	unsigned long flags;
 	int sigpending;
+	wait_queue_head_t wq;
 
 	P9_DPRINTK(P9_DEBUG_MUX, "client %p op %d\n", c, type);
 
@@ -586,6 +579,9 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 	if (err)
 		goto reterr;
 	p9pdu_finalize(req->tc);
+	init_waitqueue_head(&wq);
+	req->aux = &wq;
+	req->client_cb = p9_client_cb;
 
 	err = c->trans_mod->request(c, req);
 	if (err < 0) {
@@ -594,11 +590,10 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 		goto reterr;
 	}
 
-	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d\n", req->wq, tag);
-	err = wait_event_interruptible(*req->wq,
-						req->status >= REQ_STATUS_RCVD);
+	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d\n", &wq, tag);
+	err = wait_event_interruptible(wq, req->status >= REQ_STATUS_RCVD);
 	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d returned %d\n",
-						req->wq, tag, err);
+						&wq, tag, err);
 
 	if (req->status == REQ_STATUS_ERROR) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "req_status error %d\n", req->t_err);

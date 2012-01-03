@@ -222,7 +222,7 @@ static void p9_conn_cancel(struct p9_conn *m, int err)
 	list_for_each_entry_safe(req, rtmp, &cancel_list, req_list) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "call back req %p\n", req);
 		list_del(&req->req_list);
-		p9_client_cb(m->client, req);
+		req->client_cb(m->client, req, req->aux);
 	}
 }
 
@@ -373,7 +373,7 @@ static void p9_read_work(struct work_struct *work)
 			m->req->status = REQ_STATUS_RCVD;
 		list_del(&m->req->req_list);
 		spin_unlock(&m->client->lock);
-		p9_client_cb(m->client, m->req);
+		m->req->client_cb(m->client, m->req, m->req->aux);
 		m->rbuf = NULL;
 		m->rpos = 0;
 		m->rsize = 0;

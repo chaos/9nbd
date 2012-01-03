@@ -26,6 +26,8 @@
 #ifndef NET_9P_CLIENT_H
 #define NET_9P_CLIENT_H
 
+struct p9_client;
+
 /* Number of requests per row */
 #define P9_ROW_MAXTAG 255
 
@@ -95,7 +97,7 @@ enum p9_req_status_t {
  * @wq: wait_queue for the client to block on for this request
  * @tc: the request fcall structure
  * @rc: the response fcall structure
- * @aux: transport specific data (provided for trans_fd migration)
+ * @aux: client specific data
  * @req_list: link for higher level objects to chain requests
  *
  * Transport use an array to track outstanding requests
@@ -112,9 +114,10 @@ enum p9_req_status_t {
 struct p9_req_t {
 	int status;
 	int t_err;
-	wait_queue_head_t *wq;
 	struct p9_fcall *tc;
 	struct p9_fcall *rc;
+	void	(*client_cb)(struct p9_client *client,
+			     struct p9_req_t *req, void *aux);
 	void *aux;
 
 	struct list_head req_list;
@@ -252,7 +255,6 @@ int p9_client_mkdir_dotl(struct p9_fid *fid, char *name, int mode,
 int p9_client_lock_dotl(struct p9_fid *fid, struct p9_flock *flock, u8 *status);
 int p9_client_getlock_dotl(struct p9_fid *fid, struct p9_getlock *fl);
 struct p9_req_t *p9_tag_lookup(struct p9_client *, u16);
-void p9_client_cb(struct p9_client *c, struct p9_req_t *req);
 
 int p9_parse_header(struct p9_fcall *, int32_t *, int8_t *, int16_t *, int);
 int p9stat_read(char *, int, struct p9_wstat *, int);
