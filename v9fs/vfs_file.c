@@ -336,50 +336,6 @@ out_err:
 }
 
 /**
- * v9fs_file_readn - read from a file
- * @filp: file pointer to read
- * @data: data buffer to read data into
- * @udata: user data buffer to read data into
- * @count: size of buffer
- * @offset: offset at which to read data
- *
- */
-
-ssize_t
-v9fs_file_readn(struct file *filp, char *data, char __user *udata, u32 count,
-	       u64 offset)
-{
-	int n, total, size;
-	struct p9_fid *fid = filp->private_data;
-
-	P9_DPRINTK(P9_DEBUG_VFS, "fid %d offset %llu count %d\n", fid->fid,
-					(long long unsigned) offset, count);
-
-	n = 0;
-	total = 0;
-	size = fid->iounit ? fid->iounit : fid->clnt->msize - P9_IOHDRSZ;
-	do {
-		n = p9_client_read(fid, data, udata, offset, count);
-		if (n <= 0)
-			break;
-
-		if (data)
-			data += n;
-		if (udata)
-			udata += n;
-
-		offset += n;
-		count -= n;
-		total += n;
-	} while (count > 0 && n == size);
-
-	if (n < 0)
-		total = n;
-
-	return total;
-}
-
-/**
  * v9fs_file_read - read from a file
  * @filp: file pointer to read
  * @udata: user data buffer to read data into
@@ -401,7 +357,7 @@ v9fs_file_read(struct file *filp, char __user *udata, size_t count,
 
 	size = fid->iounit ? fid->iounit : fid->clnt->msize - P9_IOHDRSZ;
 	if (count > size)
-		ret = v9fs_file_readn(filp, NULL, udata, count, *offset);
+		ret = p9_client_readn(fid, NULL, udata, *offset, count);
 	else
 		ret = p9_client_read(fid, NULL, udata, *offset, count);
 

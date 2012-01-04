@@ -40,34 +40,67 @@
 #include "v9fs_vfs.h"
 #include "cache.h"
 
-/**
- * v9fs_vfs_readpage - read an entire page in from 9P
- *
- * @filp: file being read
- * @page: structure to page
- *
- */
+static void v9fs_vfs_readpage_async_cb(struct page *page, char *data, int len)
+{
+	struct inode *inode = page->mapping->host;
+	char *buffer;
 
-static int v9fs_vfs_readpage(struct file *filp, struct page *page)
+	if (len < 0) {
+		v9fs_uncache_page(inode, page);
+		SetPageError(page);
+		goto done;
+	}
+
+	buffer = kmap(page);
+	memcpy(buffer, data, len);
+	memset(buffer + len, 0, PAGE_CACHE_SIZE - len);
+	kunmap(page);
+
+	flush_dcache_page(page);
+	SetPageUptodate(page);
+
+	v9fs_readpage_to_fscache(inode, page);
+done:
+	unlock_page(page);
+}
+
+static int v9fs_vfs_readpage_async(struct file *filp, struct page *page)
+{
+	int retval;
+	loff_t offset;
+	struct inode *inode;
+	struct p9_fid *fid;
+
+	inode = page->mapping->host;
+	fid = filp->private_data;
+
+	offset = page_offset(page);
+
+	retval = p9_client_readpage(fid, offset, page, PAGE_CACHE_SIZE,
+				    v9fs_vfs_readpage_async_cb);
+	if (retval < 0) {
+		v9fs_uncache_page(inode, page);
+		unlock_page(page);
+	}
+
+	return retval;
+}
+
+static int v9fs_vfs_readpage_sync(struct file *filp, struct page *page)
 {
 	int retval;
 	loff_t offset;
 	char *buffer;
 	struct inode *inode;
+	struct p9_fid *fid;
 
 	inode = page->mapping->host;
-	P9_DPRINTK(P9_DEBUG_VFS, "\n");
-
-	BUG_ON(!PageLocked(page));
-
-	retval = v9fs_readpage_from_fscache(inode, page);
-	if (retval == 0)
-		return retval;
+	fid = filp->private_data;
 
 	buffer = kmap(page);
 	offset = page_offset(page);
 
-	retval = v9fs_file_readn(filp, buffer, NULL, PAGE_CACHE_SIZE, offset);
+	retval = p9_client_readn(fid, buffer, NULL, offset, PAGE_CACHE_SIZE);
 	if (retval < 0) {
 		v9fs_uncache_page(inode, page);
 		goto done;
@@ -83,6 +116,38 @@ static int v9fs_vfs_readpage(struct file *filp, struct page *page)
 done:
 	kunmap(page);
 	unlock_page(page);
+	return retval;
+}
+
+/**
+ * v9fs_vfs_readpage - read an entire page in from 9P
+ *
+ * @filp: file being read
+ * @page: structure to page
+ *
+ */
+
+static int v9fs_vfs_readpage(struct file *filp, struct page *page)
+{
+	int retval;
+	struct inode *inode;
+	struct p9_fid *fid;
+
+	inode = page->mapping->host;
+	P9_DPRINTK(P9_DEBUG_VFS, "\n");
+
+	BUG_ON(!PageLocked(page));
+
+	retval = v9fs_readpage_from_fscache(inode, page);
+	if (retval == 0)
+		return retval;
+
+	fid = filp->private_data;
+	if (fid->clnt->msize - P9_IOHDRSZ < PAGE_CACHE_SIZE)
+		retval = v9fs_vfs_readpage_sync(filp, page);
+	else
+		retval = v9fs_vfs_readpage_async(filp, page);
+
 	return retval;
 }
 

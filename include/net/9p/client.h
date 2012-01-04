@@ -236,6 +236,11 @@ int p9_client_fsync(struct p9_fid *fid, int datasync);
 int p9_client_remove(struct p9_fid *fid);
 int p9_client_read(struct p9_fid *fid, char *data, char __user *udata,
 							u64 offset, u32 count);
+int p9_client_readn(struct p9_fid *fid, char *data, char __user *udata,
+							u64 offset, u32 count);
+int p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page,
+	int len, void (*readpage_cb)(struct page *page, char *data, int len));
+
 int p9_client_write(struct p9_fid *fid, char *data, const char __user *udata,
 							u64 offset, u32 count);
 int p9_client_readdir(struct p9_fid *fid, char *data, u32 count, u64 offset);

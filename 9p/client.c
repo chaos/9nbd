@@ -1306,6 +1306,60 @@ error:
 EXPORT_SYMBOL(p9_client_read);
 
 int
+p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
+								u32 count)
+{
+        int n, total, size;
+
+        P9_DPRINTK(P9_DEBUG_9P, "fid %d offset %llu count %d\n", fid->fid,
+                                        (long long unsigned) offset, count);
+
+        n = 0;
+        total = 0;
+        size = fid->iounit ? fid->iounit : fid->clnt->msize - P9_IOHDRSZ;
+        do {
+                n = p9_client_read(fid, data, udata, offset, count);
+                if (n <= 0)
+                        break;
+
+                if (data)
+                        data += n;
+                if (udata)
+                        udata += n;
+
+                offset += n;
+                count -= n;
+                total += n;
+        } while (count > 0 && n == size);
+
+        if (n < 0)
+                total = n;
+
+        return total;
+
+}
+EXPORT_SYMBOL(p9_client_readn);
+
+int
+p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int len,
+		void (*readpage_cb)(struct page *page, char *data, int len))
+{
+	int retval;
+	char *buffer;
+
+	buffer = kmalloc(len, GFP_KERNEL);
+	if (!buffer)
+		return -ENOMEM;
+
+	retval = p9_client_readn(fid, buffer, NULL, offset, len);
+	readpage_cb(page, buffer, retval);
+	kfree(buffer);	
+
+	return 0;
+}
+EXPORT_SYMBOL(p9_client_readpage);
+
+int
 p9_client_write(struct p9_fid *fid, char *data, const char __user *udata,
 							u64 offset, u32 count)
 {
