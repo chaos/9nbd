@@ -1,3 +1,6 @@
+In v9fs-2.6.38.5-10:
+* Make readpage implementation asynchronous (issue 85)
+
 In v9fs-2.6.38.5-9:
 * Handle signals properly in file_do_lock (issue 82)
 
