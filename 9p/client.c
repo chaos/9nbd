@@ -1340,21 +1340,89 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 }
 EXPORT_SYMBOL(p9_client_readn);
 
+struct readpage_info {
+	struct page *page;
+	void (*cb)(struct page *page, char *data, int len);
+};
+
+static void p9_client_readpage_cb(struct p9_client *c, struct p9_req_t *req,
+				  void *aux)
+{
+	struct readpage_info *info = (struct readpage_info *)aux;
+	int err, count;
+	char *dp = NULL;
+
+	if (req->status == REQ_STATUS_ERROR)
+		err = req->t_err;
+	else
+		err = p9_check_errors(c, req);
+	if (err == 0) {
+		err = p9pdu_readf(req->rc, c->proto_version, "D", &count, &dp);
+		if (err)
+			p9pdu_dump(1, req->rc);
+	}
+	if (err == 0) {
+		P9_DPRINTK(P9_DEBUG_9P, "<<< RREAD count %d\n", count);
+	}
+		
+	info->cb(info->page, dp, err ? err : count);
+	p9_free_req(c, req);
+	kfree (info);
+}
+
 int
-p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int len,
+p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 		void (*readpage_cb)(struct page *page, char *data, int len))
 {
-	int retval;
-	char *buffer;
+	int tag, err;
+	struct p9_req_t *req;
+	struct readpage_info *info;
+	struct p9_client *c;
 
-	buffer = kmalloc(len, GFP_KERNEL);
-	if (!buffer)
+	c = fid->clnt;	
+
+	P9_DPRINTK(P9_DEBUG_9P, ">>> TREAD fid %d offset %llu %d\n", fid->fid,
+					(long long unsigned) offset, count);
+
+	BUG_ON(count > c->msize - P9_IOHDRSZ);
+	BUG_ON(count > fid->iounit && fid->iounit > 0);
+
+	if (c->status == Disconnected || c->status == BeginDisconnect)
+		return -EIO;
+
+	info = kmalloc (sizeof(struct readpage_info), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+	info->page = page;
+	info->cb = readpage_cb;
+
+	tag = p9_idpool_get(c->tagpool);
+	if (tag < 0)
 		return -ENOMEM;
 
-	retval = p9_client_readn(fid, buffer, NULL, offset, len);
-	readpage_cb(page, buffer, retval);
-	kfree(buffer);	
+        req = p9_tag_alloc(c, tag);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
 
+	p9pdu_prepare(req->tc, tag, P9_TREAD);
+	err = p9pdu_writef(req->tc, c->proto_version, "dqd",
+			   fid->fid, offset, count);
+	if (err) {
+		p9_free_req(c, req);
+		return err;
+	}
+	p9pdu_finalize(req->tc);
+	req->aux = info;
+	req->client_cb = p9_client_readpage_cb;
+
+	err = c->trans_mod->request(c, req);
+	if (err < 0) {
+		if (err != -ERESTARTSYS)
+			c->status = Disconnected;
+		p9_free_req(c, req);
+		return err;
+	}
+	
 	return 0;
 }
 EXPORT_SYMBOL(p9_client_readpage);

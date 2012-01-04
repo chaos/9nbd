@@ -143,7 +143,8 @@ static int v9fs_vfs_readpage(struct file *filp, struct page *page)
 		return retval;
 
 	fid = filp->private_data;
-	if (fid->clnt->msize - P9_IOHDRSZ < PAGE_CACHE_SIZE)
+	if (fid->clnt->msize - P9_IOHDRSZ < PAGE_CACHE_SIZE ||
+			(fid->iounit > 0 && fid->iounit < PAGE_CACHE_SIZE))
 		retval = v9fs_vfs_readpage_sync(filp, page);
 	else
 		retval = v9fs_vfs_readpage_async(filp, page);

@@ -37,9 +37,6 @@
 #include <net/9p/client.h>
 #include "protocol.h"
 
-static int
-p9pdu_writef(struct p9_fcall *pdu, int proto_version, const char *fmt, ...);
-
 #ifdef CONFIG_NET_9P_DEBUG
 void
 p9pdu_dump(int way, struct p9_fcall *pdu)
@@ -544,7 +541,7 @@ int p9pdu_readf(struct p9_fcall *pdu, int proto_version, const char *fmt, ...)
 	return ret;
 }
 
-static int
+int
 p9pdu_writef(struct p9_fcall *pdu, int proto_version, const char *fmt, ...)
 {
 	va_list ap;
