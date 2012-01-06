@@ -1305,38 +1305,179 @@ error:
 }
 EXPORT_SYMBOL(p9_client_read);
 
+struct readn_info {
+	struct p9_req_t *req;
+	u64 roffset;
+	u32 rcount;
+	int retval;
+	char *data;
+	atomic_t *req_count;
+	wait_queue_head_t *wq;
+};
+
+static void p9_client_readn_cb(struct p9_client *c, struct p9_req_t *req,
+			       void *aux)
+{
+	struct readn_info *info = (struct readn_info *)aux;
+	int err, count;
+	char *dp = NULL;
+
+	/* FIXME: handle other req->status values like REQ_STATUS_FLSH? */
+	if (req->status == REQ_STATUS_ERROR) {
+		err = req->t_err;
+		goto done;
+	}
+	err = p9_check_errors(c, req);
+	if (err)
+		goto done;
+	err = p9pdu_readf(req->rc, c->proto_version, "D", &count, &dp);
+	if (err) {
+		p9pdu_dump(1, req->rc);
+		goto done;
+	}
+	P9_DPRINTK(P9_DEBUG_9P, "<<< RREAD count %d\n", count);
+done:
+	BUG_ON(err > 0);
+	if (err)
+		info->retval = err;
+	else {
+		info->retval = count;
+		info->data = dp;
+	}
+	atomic_dec(info->req_count);
+	wake_up(info->wq);
+}
+
 int
 p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 								u32 count)
 {
-        int n, total, size;
+	int i, tag, rsize, nreqs, err, total;
+	struct p9_client *c;
+	struct readn_info *reqs;
+	atomic_t req_count;
+	wait_queue_head_t wq;
+	int sigpending;
+	unsigned long flags;
 
         P9_DPRINTK(P9_DEBUG_9P, "fid %d offset %llu count %d\n", fid->fid,
                                         (long long unsigned) offset, count);
 
-        n = 0;
-        total = 0;
-        size = fid->iounit ? fid->iounit : fid->clnt->msize - P9_IOHDRSZ;
-        do {
-                n = p9_client_read(fid, data, udata, offset, count);
-                if (n <= 0)
-                        break;
+	c = fid->clnt;
 
-                if (data)
-                        data += n;
-                if (udata)
-                        udata += n;
+	if (c->status == Disconnected || c->status == BeginDisconnect)
+		return -EIO;
 
-                offset += n;
-                count -= n;
-                total += n;
-        } while (count > 0 && n == size);
+	if (signal_pending(current)) {
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+	} else
+		sigpending = 0;
 
-        if (n < 0)
-                total = n;
+	init_waitqueue_head(&wq);
+	atomic_set(&req_count, 0);
 
-        return total;
+	rsize = fid->iounit;
+	if (!rsize || rsize > c->msize-P9_IOHDRSZ)
+		rsize = c->msize - P9_IOHDRSZ;
+	nreqs = count / rsize + (count % rsize ? 1 : 0);
+	reqs = kmalloc (nreqs * sizeof(struct readn_info), GFP_KERNEL);
+	if (!reqs)
+		return -ENOMEM;
+	memset(reqs, 0, nreqs * sizeof(struct readn_info));
 
+	/* allocate and marshall requests */
+	for (i = 0; i < nreqs; i++) {
+		reqs[i].roffset = i * rsize;
+		if (i == nreqs - 1 && count % rsize)
+			reqs[i].rcount = count % rsize;
+		else
+			reqs[i].rcount = rsize;
+		reqs[i].req_count = &req_count;
+		reqs[i].wq = &wq;
+		tag = p9_idpool_get(c->tagpool);
+		if (tag < 0) {
+			err = -ENOMEM;
+			goto done;
+		}
+		reqs[i].req = p9_tag_alloc(c, tag);
+		if (IS_ERR(reqs[i].req)) {
+			err = PTR_ERR(reqs[i].req);
+			goto done;
+		}
+		p9pdu_prepare(reqs[i].req->tc, tag, P9_TREAD);
+		err = p9pdu_writef(reqs[i].req->tc, c->proto_version, "dqd",
+				   fid->fid, offset + reqs[i].roffset,
+				   reqs[i].rcount);
+		if (err)
+			goto done;
+		p9pdu_finalize(reqs[i].req->tc);
+		reqs[i].req->aux = &reqs[i];
+		reqs[i].req->client_cb = p9_client_readn_cb;
+	}
+
+	/* send requests */
+	for (i = 0; i < nreqs; i++) {
+		err = c->trans_mod->request(c, reqs[i].req);
+		if (err < 0) {
+			if (err != -ERESTARTSYS)
+				c->status = Disconnected;
+			for (; i < nreqs; i++)
+				reqs[i].retval = err;
+			break;
+		}
+		atomic_inc(&req_count);
+	}
+
+	/* tally responses */
+	err = wait_event_interruptible(wq, atomic_read(&req_count) == 0);
+
+	if ((err == -ERESTARTSYS) && (c->status == Connected)) {
+		P9_DPRINTK(P9_DEBUG_MUX, "flushing\n");
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+
+		for (i = 0; i < nreqs; i++) {
+			if (c->trans_mod->cancel(c, reqs[i].req))
+				p9_client_flush(c, reqs[i].req);
+		}
+	}
+	if (sigpending) {
+		spin_lock_irqsave(&current->sighand->siglock, flags);
+		recalc_sigpending();
+		spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	}
+	if (err)
+		goto done;
+	total = 0;
+	for (i = 0; i < nreqs; i++) {
+		err = reqs[i].retval;
+		if (err < 0)
+			break;
+		if (udata) {
+			err = copy_to_user(udata + reqs[i].roffset,
+					   reqs[i].data, reqs[i].retval);
+			if (err) {
+				err = -EFAULT;
+				break;
+			}
+		} else {
+			memmove(data + reqs[i].roffset,
+				reqs[i].data, reqs[i].retval);
+		}
+		total += reqs[i].retval;
+		if (reqs[i].retval < reqs[i].rcount)
+			break;
+	}
+	if (!err)
+		err = total;
+done:
+	for (i = 0; i < nreqs; i++)
+		if (reqs[i].req && !IS_ERR(reqs[i].req))
+			p9_free_req(c, reqs[i].req);
+	kfree (reqs);
+
+        return err;
 }
 EXPORT_SYMBOL(p9_client_readn);
 
@@ -1352,6 +1493,7 @@ static void p9_client_readpage_cb(struct p9_client *c, struct p9_req_t *req,
 	int err, count;
 	char *dp = NULL;
 
+	/* FIXME: handle other req->status values like REQ_STATUS_FLSH? */
 	if (req->status == REQ_STATUS_ERROR)
 		err = req->t_err;
 	else
