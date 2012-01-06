@@ -1306,59 +1306,24 @@ error:
 EXPORT_SYMBOL(p9_client_read);
 
 struct readn_info {
-	struct p9_req_t *req;
 	u64 roffset;
 	u32 rcount;
-	int retval;
-	char *data;
-	atomic_t *req_count;
-	wait_queue_head_t *wq;
+	struct p9_req_t *req;
+	wait_queue_head_t wq;
 };
-
-static void p9_client_readn_cb(struct p9_client *c, struct p9_req_t *req,
-			       void *aux)
-{
-	struct readn_info *info = (struct readn_info *)aux;
-	int err, count;
-	char *dp = NULL;
-
-	/* FIXME: handle other req->status values like REQ_STATUS_FLSH? */
-	if (req->status == REQ_STATUS_ERROR) {
-		err = req->t_err;
-		goto done;
-	}
-	err = p9_check_errors(c, req);
-	if (err)
-		goto done;
-	err = p9pdu_readf(req->rc, c->proto_version, "D", &count, &dp);
-	if (err) {
-		p9pdu_dump(1, req->rc);
-		goto done;
-	}
-	P9_DPRINTK(P9_DEBUG_9P, "<<< RREAD count %d\n", count);
-done:
-	BUG_ON(err > 0);
-	if (err)
-		info->retval = err;
-	else {
-		info->retval = count;
-		info->data = dp;
-	}
-	atomic_dec(info->req_count);
-	wake_up(info->wq);
-}
 
 int
 p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 								u32 count)
 {
-	int i, tag, rsize, nreqs, err, total;
+	const int max_active_req = 32;
+	int i, j, tag, rsize, nreqs, err, total, eof;
 	struct p9_client *c;
 	struct readn_info *reqs;
-	atomic_t req_count;
-	wait_queue_head_t wq;
 	int sigpending;
 	unsigned long flags;
+	char *dp;
+	int dcount;
 
         P9_DPRINTK(P9_DEBUG_9P, "fid %d offset %llu count %d\n", fid->fid,
                                         (long long unsigned) offset, count);
@@ -1374,109 +1339,136 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 	} else
 		sigpending = 0;
 
-	init_waitqueue_head(&wq);
-	atomic_set(&req_count, 0);
-
 	rsize = fid->iounit;
 	if (!rsize || rsize > c->msize-P9_IOHDRSZ)
 		rsize = c->msize - P9_IOHDRSZ;
 	nreqs = count / rsize + (count % rsize ? 1 : 0);
+
+	/* Allocate an array with a slot for each request.
+ 	 * The request itself is not allocated until it can be sent.
+	 */
 	reqs = kmalloc (nreqs * sizeof(struct readn_info), GFP_KERNEL);
 	if (!reqs)
 		return -ENOMEM;
 	memset(reqs, 0, nreqs * sizeof(struct readn_info));
-
-	/* allocate and marshall requests */
 	for (i = 0; i < nreqs; i++) {
 		reqs[i].roffset = i * rsize;
 		if (i == nreqs - 1 && count % rsize)
 			reqs[i].rcount = count % rsize;
 		else
 			reqs[i].rcount = rsize;
-		reqs[i].req_count = &req_count;
-		reqs[i].wq = &wq;
-		tag = p9_idpool_get(c->tagpool);
-		if (tag < 0) {
-			err = -ENOMEM;
-			goto done;
-		}
-		reqs[i].req = p9_tag_alloc(c, tag);
-		if (IS_ERR(reqs[i].req)) {
-			err = PTR_ERR(reqs[i].req);
-			goto done;
-		}
-		p9pdu_prepare(reqs[i].req->tc, tag, P9_TREAD);
-		err = p9pdu_writef(reqs[i].req->tc, c->proto_version, "dqd",
-				   fid->fid, offset + reqs[i].roffset,
-				   reqs[i].rcount);
-		if (err)
-			goto done;
-		p9pdu_finalize(reqs[i].req->tc);
-		reqs[i].req->aux = &reqs[i];
-		reqs[i].req->client_cb = p9_client_readn_cb;
+		init_waitqueue_head(&reqs[i].wq);
 	}
 
-	/* send requests */
-	for (i = 0; i < nreqs; i++) {
-		err = c->trans_mod->request(c, reqs[i].req);
-		if (err < 0) {
-			if (err != -ERESTARTSYS)
-				c->status = Disconnected;
-			for (; i < nreqs; i++)
-				reqs[i].retval = err;
-			break;
+	/* Send requests and receive replies concurrently using a
+	 * sliding window of max_active_req requests.
+	 * Replies are processed in the order sent.
+	 */
+	i = j = err = total = eof = 0;
+	while (j < nreqs || (eof && j < i)) {
+		/* Send requests */
+		if (i < nreqs && !eof) {
+			tag = p9_idpool_get(c->tagpool);
+			if (tag < 0) {
+				err = -ENOMEM;
+				break;
+			}
+			reqs[i].req = p9_tag_alloc(c, tag);
+			if (IS_ERR(reqs[i].req)) {
+				err = PTR_ERR(reqs[i].req);
+				break;
+			}
+			p9pdu_prepare(reqs[i].req->tc, tag, P9_TREAD);
+			err = p9pdu_writef(reqs[i].req->tc, c->proto_version, "dqd",
+					   fid->fid, offset + reqs[i].roffset,
+					   reqs[i].rcount);
+			if (err) {
+				p9_free_req(c, reqs[i].req);
+				reqs[i].req = NULL;
+				break;
+			}
+			p9pdu_finalize(reqs[i].req->tc);
+			reqs[i].req->aux = &reqs[i].wq;
+			reqs[i].req->client_cb = p9_client_cb;
+			err = c->trans_mod->request(c, reqs[i].req);
+			if (err < 0) {
+				if (err != -ERESTARTSYS)
+					c->status = Disconnected;
+				p9_free_req(c, reqs[i].req);
+				reqs[i].req = NULL;
+				break;
+			}
+			i++;
 		}
-		atomic_inc(&req_count);
+		/* Receive replies */
+		if (i - j == max_active_req || i == nreqs || eof) {
+			err = wait_event_interruptible(reqs[j].wq,
+				reqs[j].req->status >= REQ_STATUS_RCVD);
+			if (err)
+				break;
+			if (reqs[j].req->status == REQ_STATUS_ERROR) {
+				err = reqs[j].req->t_err;
+				goto freereq;
+			}
+			err = p9_check_errors(c, reqs[j].req);
+			if (err < 0)
+				goto freereq;
+			err = p9pdu_readf(reqs[j].req->rc, c->proto_version,
+					  "D", &dcount, &dp);
+			if (err < 0) {
+				p9pdu_dump(1, reqs[j].req->rc);
+				goto freereq;
+			}
+			P9_DPRINTK(P9_DEBUG_9P, "<<< RREAD count %d\n", dcount);
+			if (eof)
+				goto freereq;
+			if (udata) {
+				err = copy_to_user(udata + reqs[j].roffset,
+						   dp, dcount);
+				if (err) {
+					err = -EFAULT;
+					goto freereq;
+				}
+			} else
+				memmove(data + reqs[j].roffset, dp, dcount);
+			total += dcount;
+			if (dcount < reqs[j].rcount)
+				eof = 1;
+freereq:
+			p9_free_req (c, reqs[j].req);
+			reqs[j].req = NULL;
+			if (err < 0)
+				break;
+			j++;
+		}
 	}
 
-	/* tally responses */
-	err = wait_event_interruptible(wq, atomic_read(&req_count) == 0);
-
-	if ((err == -ERESTARTSYS) && (c->status == Connected)) {
-		P9_DPRINTK(P9_DEBUG_MUX, "flushing\n");
+	if ((err == -ERESTARTSYS)) {
 		sigpending = 1;
 		clear_thread_flag(TIF_SIGPENDING);
-
-		for (i = 0; i < nreqs; i++) {
-			if (c->trans_mod->cancel(c, reqs[i].req))
-				p9_client_flush(c, reqs[i].req);
-		}
 	}
+
+	/* Free request array, cancelling any requests still in flight
+ 	 * due to error.
+ 	 */
+	for (i = 0; i < nreqs; i++) {
+		if (!reqs[i].req || IS_ERR(reqs[i].req))
+			continue;
+		if (c->trans_mod->cancel(c, reqs[i].req))
+			p9_client_flush(c, reqs[i].req);
+		wait_event(reqs[i].wq, reqs[i].req->status >= REQ_STATUS_RCVD);	
+		p9_free_req(c, reqs[i].req);
+	}
+	kfree (reqs);
+
 	if (sigpending) {
 		spin_lock_irqsave(&current->sighand->siglock, flags);
 		recalc_sigpending();
 		spin_unlock_irqrestore(&current->sighand->siglock, flags);
 	}
-	if (err)
-		goto done;
-	total = 0;
-	for (i = 0; i < nreqs; i++) {
-		err = reqs[i].retval;
-		if (err < 0)
-			break;
-		if (udata) {
-			err = copy_to_user(udata + reqs[i].roffset,
-					   reqs[i].data, reqs[i].retval);
-			if (err) {
-				err = -EFAULT;
-				break;
-			}
-		} else {
-			memmove(data + reqs[i].roffset,
-				reqs[i].data, reqs[i].retval);
-		}
-		total += reqs[i].retval;
-		if (reqs[i].retval < reqs[i].rcount)
-			break;
-	}
+
 	if (!err)
 		err = total;
-done:
-	for (i = 0; i < nreqs; i++)
-		if (reqs[i].req && !IS_ERR(reqs[i].req))
-			p9_free_req(c, reqs[i].req);
-	kfree (reqs);
-
         return err;
 }
 EXPORT_SYMBOL(p9_client_readn);
