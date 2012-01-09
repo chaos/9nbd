@@ -1512,6 +1512,8 @@ p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 	struct p9_req_t *req;
 	struct readpage_info *info;
 	struct p9_client *c;
+	int sigpending;
+	unsigned long flags;
 
 	c = fid->clnt;	
 
@@ -1523,6 +1525,13 @@ p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 
 	if (c->status == Disconnected || c->status == BeginDisconnect)
 		return -EIO;
+
+	if (signal_pending(current)) {
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+	} else
+		sigpending = 0;
+
 
 	info = kmalloc (sizeof(struct readpage_info), GFP_KERNEL);
 	if (!info)
@@ -1556,7 +1565,18 @@ p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 		p9_free_req(c, req);
 		return err;
 	}
+
+	if ((err == -ERESTARTSYS)) {
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+	}
 	
+	if (sigpending) {
+		spin_lock_irqsave(&current->sighand->siglock, flags);
+		recalc_sigpending();
+		spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL(p9_client_readpage);
