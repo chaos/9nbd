@@ -1370,7 +1370,7 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 	 * Replies are processed in the order sent.
 	 */
 	i = j = err = total = eof = 0;
-	while (j < nreqs || (eof && j < i)) {
+	while (j < nreqs && !(eof && j == i)) {
 		/* Send requests */
 		if (i < nreqs && !eof) {
 			tag = p9_idpool_get(c->tagpool);
@@ -1406,7 +1406,8 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 			i++;
 		}
 		/* Receive replies */
-		if (i - j == c->rwdepth || i == nreqs || eof) {
+		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
+			BUG_ON (!reqs[j].req);
 			err = wait_event_interruptible(reqs[j].wq,
 				reqs[j].req->status >= REQ_STATUS_RCVD);
 			if (err)
