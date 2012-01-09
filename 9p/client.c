@@ -1406,11 +1406,20 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 				reqs[j].req->status >= REQ_STATUS_RCVD);
 			if (err)
 				break;
-			if (reqs[j].req->status == REQ_STATUS_ERROR) {
-				err = reqs[j].req->t_err;
-				goto freereq;
+			switch (reqs[j].req->status) {
+				case REQ_STATUS_RCVD:
+					err = p9_check_errors(c, reqs[j].req);
+					break;
+				case REQ_STATUS_FLSHD:
+					err = -ECANCELED;
+					break;
+				case REQ_STATUS_ERROR:
+					err = reqs[j].req->t_err;
+					break;
+				default:
+					BUG();
+					/*NOTREACHED*/
 			}
-			err = p9_check_errors(c, reqs[j].req);
 			if (err < 0)
 				goto freereq;
 			err = p9pdu_readf(reqs[j].req->rc, c->proto_version,
@@ -1482,22 +1491,31 @@ static void p9_client_readpage_cb(struct p9_client *c, struct p9_req_t *req,
 				  void *aux)
 {
 	struct readpage_info *info = (struct readpage_info *)aux;
-	int err, count;
+	int err = 0, count;
 	char *dp = NULL;
 
-	/* FIXME: handle other req->status values like REQ_STATUS_FLSH? */
-	if (req->status == REQ_STATUS_ERROR)
-		err = req->t_err;
-	else
-		err = p9_check_errors(c, req);
-	if (err == 0) {
+	switch (req->status) {
+		case REQ_STATUS_RCVD:
+			err = p9_check_errors(c, req);
+			break;
+		case REQ_STATUS_FLSHD:
+			err = -ECANCELED;
+			break;
+		case REQ_STATUS_ERROR:
+			err = req->t_err;
+			break;
+		default:
+			BUG();
+			/*NOTREACHED*/
+	}
+	BUG_ON(err > 0);
+	if (!err) {
 		err = p9pdu_readf(req->rc, c->proto_version, "D", &count, &dp);
 		if (err)
 			p9pdu_dump(1, req->rc);
 	}
-	if (err == 0) {
+	if (!err)
 		P9_DPRINTK(P9_DEBUG_9P, "<<< RREAD count %d\n", count);
-	}
 		
 	info->cb(info->page, dp, err ? err : count);
 	p9_free_req(c, req);
