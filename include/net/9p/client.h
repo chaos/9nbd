@@ -127,6 +127,7 @@ struct p9_req_t {
  * struct p9_client - per client instance state
  * @lock: protect @fidlist
  * @msize: maximum data size negotiated by protocol
+ * @rwdepth: maximum read/write queue depth (per syscall)
  * @dotu: extension flags negotiated by protocol
  * @proto_version: 9P protocol version to use
  * @trans_mod: module API instantiated with this client
@@ -155,6 +156,7 @@ struct p9_req_t {
 struct p9_client {
 	spinlock_t lock; /* protect client structure */
 	int msize;
+	int rwdepth;
 	unsigned char proto_version;
 	struct p9_trans_module *trans_mod;
 	enum p9_trans_status status;

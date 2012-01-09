@@ -49,6 +49,7 @@
 
 enum {
 	Opt_msize,
+	Opt_rwdepth,
 	Opt_trans,
 	Opt_legacy,
 	Opt_version,
@@ -57,6 +58,7 @@ enum {
 
 static const match_table_t tokens = {
 	{Opt_msize, "msize=%u"},
+	{Opt_rwdepth, "rwdepth=%u"},
 	{Opt_legacy, "noextend"},
 	{Opt_trans, "trans=%s"},
 	{Opt_version, "version=%s"},
@@ -117,6 +119,7 @@ static int parse_opts(char *opts, struct p9_client *clnt)
 
 	clnt->proto_version = p9_proto_2000u;
 	clnt->msize = 8192;
+	clnt->rwdepth = 1;
 
 	if (!opts)
 		return 0;
@@ -146,6 +149,9 @@ static int parse_opts(char *opts, struct p9_client *clnt)
 		switch (token) {
 		case Opt_msize:
 			clnt->msize = option;
+			break;
+		case Opt_rwdepth:
+			clnt->rwdepth= option;
 			break;
 		case Opt_trans:
 			clnt->trans_mod = v9fs_get_trans_by_name(&args[0]);
@@ -1316,7 +1322,6 @@ int
 p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 								u32 count)
 {
-	const int max_active_req = 32;
 	int i, j, tag, rsize, nreqs, err, total, eof;
 	struct p9_client *c;
 	struct readn_info *reqs;
@@ -1361,7 +1366,7 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 	}
 
 	/* Send requests and receive replies concurrently using a
-	 * sliding window of max_active_req requests.
+	 * sliding window of c->rwdepth requests.
 	 * Replies are processed in the order sent.
 	 */
 	i = j = err = total = eof = 0;
@@ -1401,7 +1406,7 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 			i++;
 		}
 		/* Receive replies */
-		if (i - j == max_active_req || i == nreqs || eof) {
+		if (i - j == c->rwdepth || i == nreqs || eof) {
 			err = wait_event_interruptible(reqs[j].wq,
 				reqs[j].req->status >= REQ_STATUS_RCVD);
 			if (err)
