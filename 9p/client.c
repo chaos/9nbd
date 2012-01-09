@@ -1407,11 +1407,21 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 		}
 		/* Receive replies */
 		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
+again:
 			BUG_ON (!reqs[j].req);
-			err = wait_event_interruptible(reqs[j].wq,
-				reqs[j].req->status >= REQ_STATUS_RCVD);
-			if (err)
+			err = wait_event_interruptible_timeout(reqs[j].wq,
+				reqs[j].req->status >= REQ_STATUS_RCVD, 10000);
+			if (err < 0)
 				break;
+			if (err == 0) { /* no jiffies left on the timer */
+				if (reqs[j].req->status < REQ_STATUS_RCVD) {
+				P9_DPRINTK(0x02,
+				    "timeout on tag %d status %d\n",
+				    reqs[j].req->tc->tag, reqs[j].req->status);
+				    goto again;
+				}
+			}
+				
 			switch (reqs[j].req->status) {
 				case REQ_STATUS_RCVD:
 					err = p9_check_errors(c, reqs[j].req);
