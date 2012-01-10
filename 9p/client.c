@@ -234,9 +234,9 @@ static struct p9_req_t *p9_tag_alloc(struct p9_client *c, u16 tag)
 	req = &c->reqs[row][col];
 	if (!req->tc) {
 		req->tc = kmalloc(sizeof(struct p9_fcall)+c->msize,
-								GFP_KERNEL);
+								GFP_NOFS);
 		req->rc = kmalloc(sizeof(struct p9_fcall)+c->msize,
-								GFP_KERNEL);
+								GFP_NOFS);
 		if ((!req->tc) || (!req->rc)) {
 			printk(KERN_ERR "Couldn't grow tag array\n");
 			kfree(req->tc);
@@ -1573,7 +1573,7 @@ p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 		sigpending = 0;
 
 
-	info = kmalloc (sizeof(struct readpage_info), GFP_KERNEL);
+	info = kmalloc (sizeof(struct readpage_info), GFP_NOFS);
 	if (!info)
 		return -ENOMEM;
 	info->page = page;
