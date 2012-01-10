@@ -534,24 +534,12 @@ static int p9_client_flush(struct p9_client *c, struct p9_req_t *oldreq)
 	return 0;
 }
 
-/**
- * p9_client_rpc - issue a request and wait for a response
- * @c: client session
- * @type: type of request
- * @fmt: protocol format string (see protocol.c)
- *
- * Returns request structure (which client must free using p9_free_req)
- */
-
-static struct p9_req_t *
-p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
+static struct p9_req_t *p9_client_vprepare_req(struct p9_client *c,
+						int8_t type,
+						const char *fmt, va_list ap)
 {
-	va_list ap;
 	int tag, err;
 	struct p9_req_t *req;
-	unsigned long flags;
-	int sigpending;
-	wait_queue_head_t wq;
 
 	P9_DPRINTK(P9_DEBUG_MUX, "client %p op %d\n", c, type);
 
@@ -562,12 +550,6 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 	/* if status is begin_disconnected we allow only clunk request */
 	if ((c->status == BeginDisconnect) && (type != P9_TCLUNK))
 		return ERR_PTR(-EIO);
-
-	if (signal_pending(current)) {
-		sigpending = 1;
-		clear_thread_flag(TIF_SIGPENDING);
-	} else
-		sigpending = 0;
 
 	tag = P9_NOTAG;
 	if (type != P9_TVERSION) {
@@ -582,24 +564,74 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 
 	/* marshall the data */
 	p9pdu_prepare(req->tc, tag, type);
-	va_start(ap, fmt);
 	err = p9pdu_vwritef(req->tc, c->proto_version, fmt, ap);
-	va_end(ap);
 	if (err)
 		goto reterr;
 	p9pdu_finalize(req->tc);
+	return req;
+reterr:
+	p9_free_req(c, req);
+        return ERR_PTR(err);
+}
+
+static struct p9_req_t *p9_client_prepare_req(struct p9_client *c,
+						int8_t type,
+						const char *fmt, ...)
+{
+	va_list ap;
+	struct p9_req_t *req;
+
+	va_start(ap, fmt);
+	req = p9_client_vprepare_req(c, type, fmt, ap);
+	va_end(ap);
+
+	return req;
+}
+
+/**
+ * p9_client_rpc - issue a request and wait for a response
+ * @c: client session
+ * @type: type of request
+ * @fmt: protocol format string (see protocol.c)
+ *
+ * Returns request structure (which client must free using p9_free_req)
+ */
+
+static struct p9_req_t *
+p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
+{
+	va_list ap;
+	int sigpending, err;
+	struct p9_req_t *req;
+	unsigned long flags;
+	wait_queue_head_t wq;
+
+	P9_DPRINTK(P9_DEBUG_MUX, "client %p op %d\n", c, type);
+
+	va_start(ap, fmt);
+	req = p9_client_vprepare_req(c, type, fmt, ap);
+	va_end(ap);
+	if (IS_ERR(req))
+		return req;
+
+	if (signal_pending(current)) {
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+	} else
+		sigpending = 0;
+
 	init_waitqueue_head(&wq);
 	req->aux = &wq;
 	req->client_cb = p9_client_cb;
 
 	err = c->trans_mod->request(c, req);
 	if (err < 0) {
-		if (err != -ERESTARTSYS)
+		if (err != -ERESTARTSYS && err != EFAULT)
 			c->status = Disconnected;
 		goto reterr;
 	}
 
-	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d\n", &wq, tag);
+	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d\n", &wq, req->tc->tag);
 again:
 	err = wait_event_interruptible_timeout(wq,
 				req->status >= REQ_STATUS_RCVD, 10000);
@@ -611,7 +643,7 @@ again:
 	if (err > 0)
 		err = 0;
 	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d returned %d\n",
-						&wq, tag, err);
+						&wq, req->tc->tag, err);
 
 	if (req->status == REQ_STATUS_ERROR) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "req_status error %d\n", req->t_err);
@@ -1337,7 +1369,7 @@ int
 p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 								u32 count)
 {
-	int i, j, tag, rsize, nreqs, err, total, eof;
+	int i, j, rsize, nreqs, err, total, eof;
 	struct p9_client *c;
 	struct readn_info *reqs;
 	int sigpending;
@@ -1349,9 +1381,6 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
                                         (long long unsigned) offset, count);
 
 	c = fid->clnt;
-
-	if (c->status == Disconnected || c->status == BeginDisconnect)
-		return -EIO;
 
 	if (signal_pending(current)) {
 		sigpending = 1;
@@ -1388,26 +1417,14 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 	while (j < nreqs && !(eof && j == i)) {
 		/* Send requests */
 		if (i < nreqs && !eof) {
-			tag = p9_idpool_get(c->tagpool);
-			if (tag < 0) {
-				err = -ENOMEM;
-				break;
-			}
-			reqs[i].req = p9_tag_alloc(c, tag);
+			reqs[i].req = p9_client_prepare_req(c, P9_TREAD,
+						"dqd", fid->fid,
+						offset + reqs[i].roffset,
+						reqs[i].rcount);
 			if (IS_ERR(reqs[i].req)) {
-				err = PTR_ERR(reqs[i].req);
+				err = PTR_ERR(reqs[i].req); 
 				break;
 			}
-			p9pdu_prepare(reqs[i].req->tc, tag, P9_TREAD);
-			err = p9pdu_writef(reqs[i].req->tc, c->proto_version, "dqd",
-					   fid->fid, offset + reqs[i].roffset,
-					   reqs[i].rcount);
-			if (err) {
-				p9_free_req(c, reqs[i].req);
-				reqs[i].req = NULL;
-				break;
-			}
-			p9pdu_finalize(reqs[i].req->tc);
 			reqs[i].req->aux = &reqs[i].wq;
 			reqs[i].req->client_cb = p9_client_cb;
 			err = c->trans_mod->request(c, reqs[i].req);
@@ -1566,7 +1583,7 @@ int
 p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 		void (*readpage_cb)(struct page *page, char *data, int len))
 {
-	int tag, err;
+	int err;
 	struct p9_req_t *req;
 	struct readpage_info *info;
 	struct p9_client *c;
@@ -1581,9 +1598,6 @@ p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 	BUG_ON(count > c->msize - P9_IOHDRSZ);
 	BUG_ON(count > fid->iounit && fid->iounit > 0);
 
-	if (c->status == Disconnected || c->status == BeginDisconnect)
-		return -EIO;
-
 	if (signal_pending(current)) {
 		sigpending = 1;
 		clear_thread_flag(TIF_SIGPENDING);
@@ -1597,22 +1611,12 @@ p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 	info->page = page;
 	info->cb = readpage_cb;
 
-	tag = p9_idpool_get(c->tagpool);
-	if (tag < 0)
-		return -ENOMEM;
-
-        req = p9_tag_alloc(c, tag);
-	if (IS_ERR(req))
+	req = p9_client_prepare_req(c, P9_TREAD, "dqd", fid->fid,
+				    offset, count);
+	if (IS_ERR(req)) {
+		kfree(info);
 		return PTR_ERR(req);
-
-	p9pdu_prepare(req->tc, tag, P9_TREAD);
-	err = p9pdu_writef(req->tc, c->proto_version, "dqd",
-			   fid->fid, offset, count);
-	if (err) {
-		p9_free_req(c, req);
-		return err;
 	}
-	p9pdu_finalize(req->tc);
 	req->aux = info;
 	req->client_cb = p9_client_readpage_cb;
 
@@ -1620,6 +1624,7 @@ p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page, int count,
 	if (err < 0) {
 		if (err != -ERESTARTSYS)
 			c->status = Disconnected;
+		kfree(info);
 		p9_free_req(c, req);
 		return err;
 	}
