@@ -600,7 +600,16 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 	}
 
 	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d\n", &wq, tag);
-	err = wait_event_interruptible(wq, req->status >= REQ_STATUS_RCVD);
+again:
+	err = wait_event_interruptible_timeout(wq,
+				req->status >= REQ_STATUS_RCVD, 10000);
+	if (err == 0 && req->status < REQ_STATUS_RCVD) {
+		P9_DPRINTK(P9_DEBUG_ERROR, "waiting for tag %d status %d\n",
+			    		   req->tc->tag, req->status);
+		goto again;
+	}
+	if (err > 0)
+		err = 0;
 	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d returned %d\n",
 						&wq, tag, err);
 
@@ -1413,21 +1422,21 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 		}
 		/* Receive replies */
 		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
-again:
 			BUG_ON (!reqs[j].req);
+again:
 			err = wait_event_interruptible_timeout(reqs[j].wq,
 				reqs[j].req->status >= REQ_STATUS_RCVD, 10000);
+			if (err == 0 && reqs[j].req->status < REQ_STATUS_RCVD) {
+				P9_DPRINTK(P9_DEBUG_ERROR,
+					   "waiting for tag %d status %d\n",
+					   reqs[j].req->tc->tag,
+					   reqs[j].req->status);
+				goto again;
+			}
+			if (err > 0)
+				err = 0;
 			if (err < 0)
 				break;
-			if (err == 0) { /* no jiffies left on the timer */
-				if (reqs[j].req->status < REQ_STATUS_RCVD) {
-				P9_DPRINTK(0x02,
-				    "timeout on tag %d status %d\n",
-				    reqs[j].req->tc->tag, reqs[j].req->status);
-				    goto again;
-				}
-			}
-				
 			switch (reqs[j].req->status) {
 				case REQ_STATUS_RCVD:
 					err = p9_check_errors(c, reqs[j].req);
@@ -1483,11 +1492,22 @@ freereq:
  	 * due to error.
  	 */
 	for (i = 0; i < nreqs; i++) {
+		int err2;
+
 		if (!reqs[i].req || IS_ERR(reqs[i].req))
 			continue;
 		if (c->trans_mod->cancel(c, reqs[i].req))
 			p9_client_flush(c, reqs[i].req);
-		wait_event(reqs[i].wq, reqs[i].req->status >= REQ_STATUS_RCVD);	
+again2:
+		err2 = wait_event_timeout(reqs[i].wq,
+				reqs[i].req->status >= REQ_STATUS_RCVD, 10000);	
+		if (err2 == 0 && reqs[i].req->status < REQ_STATUS_RCVD) {
+			P9_DPRINTK(P9_DEBUG_ERROR,
+				   "cancel: waiting for tag %d status %d\n",
+				   reqs[i].req->tc->tag,
+				   reqs[i].req->status);
+			goto again2;
+		}
 		p9_free_req(c, reqs[i].req);
 	}
 	kfree (reqs);
@@ -1498,9 +1518,7 @@ freereq:
 		spin_unlock_irqrestore(&current->sighand->siglock, flags);
 	}
 
-	if (!err)
-		err = total;
-        return err;
+        return err < 0 ? err : total;
 }
 EXPORT_SYMBOL(p9_client_readn);
 
