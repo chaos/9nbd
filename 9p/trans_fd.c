@@ -1051,7 +1051,7 @@ static struct p9_trans_module p9_fd_trans = {
  *
  */
 
-static void p9_poll_proc(struct work_struct *work)
+static void p9_poll_workfn(struct work_struct *work)
 {
 	unsigned long flags;
 

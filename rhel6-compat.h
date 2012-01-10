@@ -55,4 +55,7 @@ void setattr_copy(struct inode *inode, const struct iattr *attr)
         }
 }
 
+/* missing */
+#define flush_work_sync flush_work
+
 #endif /* _RHEL6_COMPAT_H */
