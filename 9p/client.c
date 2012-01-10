@@ -1358,20 +1358,103 @@ error:
 }
 EXPORT_SYMBOL(p9_client_read);
 
-struct readn_info {
+struct ioreq {
 	u64 roffset;
 	u32 rcount;
 	struct p9_req_t *req;
 	wait_queue_head_t wq;
 };
 
+static int
+p9_alloc_ioreq(struct p9_fid *fid, u32 count, int *nreqsp,
+						struct ioreq **reqsp)
+{
+	int i, rsize, nreqs;
+	struct ioreq *reqs;
+
+	rsize = fid->iounit;
+	if (!rsize || rsize > fid->clnt->msize-P9_IOHDRSZ)
+		rsize = fid->clnt->msize - P9_IOHDRSZ;
+	nreqs = count / rsize + (count % rsize ? 1 : 0);
+
+	reqs = kzalloc (nreqs * sizeof(struct ioreq), GFP_NOFS);
+	if (!reqs)
+		return -ENOMEM;
+	for (i = 0; i < nreqs; i++) {
+		reqs[i].roffset = i * rsize;
+		if (i == nreqs - 1 && count % rsize)
+			reqs[i].rcount = count % rsize;
+		else
+			reqs[i].rcount = rsize;
+		init_waitqueue_head(&reqs[i].wq);
+		/* alloc of p9_req_t is deferred until ready to send */
+	}
+	*nreqsp = nreqs;
+	*reqsp = reqs;
+	return 0;
+}
+
+static int
+p9_wait_ioreq(struct ioreq *r)
+{
+	int err;
+again:
+	err = wait_event_interruptible_timeout(r->wq,
+				r->req->status >= REQ_STATUS_RCVD, 10000);
+	if (err == 0 && r->req->status < REQ_STATUS_RCVD) {
+		P9_DPRINTK(P9_DEBUG_ERROR, "waiting for tag %d status %d\n",
+					   r->req->tc->tag, r->req->status);
+		goto again;
+	}
+	return err < 0 ? err : 0;
+}
+
+static void
+p9_free_ioreq(struct p9_fid *fid, int nreqs, struct ioreq *reqs)
+{
+	int i;
+	struct p9_client *c = fid->clnt;
+
+	for (i = 0; i < nreqs; i++) {
+		if (!reqs[i].req || IS_ERR(reqs[i].req))
+			continue;
+		if (c->trans_mod->cancel(c, reqs[i].req))
+			p9_client_flush(c, reqs[i].req);
+		p9_wait_ioreq(&reqs[i]);
+		p9_free_req(c, reqs[i].req);
+	}
+	kfree (reqs);
+}
+
+static int
+p9_check_req_errors(struct p9_client *c, struct p9_req_t *req)
+{
+	int err;
+
+	switch (req->status) {
+		case REQ_STATUS_RCVD:
+			err = p9_check_errors(c, req);
+			break;
+		case REQ_STATUS_FLSHD:
+			err = -ECANCELED;
+			break;
+		case REQ_STATUS_ERROR:
+			err = req->t_err;
+			break;
+		default:
+			BUG();
+			/*NOTREACHED*/
+	}
+	return err;
+}
+
 int
 p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 								u32 count)
 {
-	int i, j, rsize, nreqs, err, total, eof;
-	struct p9_client *c;
-	struct readn_info *reqs;
+	struct p9_client *c = fid->clnt;
+	int i, j, nreqs, err, total, eof;
+	struct ioreq *reqs;
 	int sigpending;
 	unsigned long flags;
 	char *dp;
@@ -1380,34 +1463,15 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
         P9_DPRINTK(P9_DEBUG_9P, "fid %d offset %llu count %d\n", fid->fid,
                                         (long long unsigned) offset, count);
 
-	c = fid->clnt;
-
 	if (signal_pending(current)) {
 		sigpending = 1;
 		clear_thread_flag(TIF_SIGPENDING);
 	} else
 		sigpending = 0;
 
-	rsize = fid->iounit;
-	if (!rsize || rsize > c->msize-P9_IOHDRSZ)
-		rsize = c->msize - P9_IOHDRSZ;
-	nreqs = count / rsize + (count % rsize ? 1 : 0);
-
-	/* Allocate an array with a slot for each request.
- 	 * The request itself is not allocated until it can be sent.
-	 */
-	reqs = kmalloc (nreqs * sizeof(struct readn_info), GFP_KERNEL);
-	if (!reqs)
-		return -ENOMEM;
-	memset(reqs, 0, nreqs * sizeof(struct readn_info));
-	for (i = 0; i < nreqs; i++) {
-		reqs[i].roffset = i * rsize;
-		if (i == nreqs - 1 && count % rsize)
-			reqs[i].rcount = count % rsize;
-		else
-			reqs[i].rcount = rsize;
-		init_waitqueue_head(&reqs[i].wq);
-	}
+	err = p9_alloc_ioreq(fid, count, &nreqs, &reqs);
+	if (err < 0)
+		return err;
 
 	/* Send requests and receive replies concurrently using a
 	 * sliding window of c->rwdepth requests.
@@ -1417,6 +1481,11 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 	while (j < nreqs && !(eof && j == i)) {
 		/* Send requests */
 		if (i < nreqs && !eof) {
+			P9_DPRINTK(P9_DEBUG_9P,
+				   ">>> TREAD fid %d offset %llu %d\n",
+				   fid->fid,
+				   (long long unsigned)offset + reqs[i].roffset,
+				   reqs[i].rcount);
 			reqs[i].req = p9_client_prepare_req(c, P9_TREAD,
 						"dqd", fid->fid,
 						offset + reqs[i].roffset,
@@ -1440,34 +1509,10 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 		/* Receive replies */
 		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
 			BUG_ON (!reqs[j].req);
-again:
-			err = wait_event_interruptible_timeout(reqs[j].wq,
-				reqs[j].req->status >= REQ_STATUS_RCVD, 10000);
-			if (err == 0 && reqs[j].req->status < REQ_STATUS_RCVD) {
-				P9_DPRINTK(P9_DEBUG_ERROR,
-					   "waiting for tag %d status %d\n",
-					   reqs[j].req->tc->tag,
-					   reqs[j].req->status);
-				goto again;
-			}
-			if (err > 0)
-				err = 0;
+			err = p9_wait_ioreq(&reqs[j]);
 			if (err < 0)
 				break;
-			switch (reqs[j].req->status) {
-				case REQ_STATUS_RCVD:
-					err = p9_check_errors(c, reqs[j].req);
-					break;
-				case REQ_STATUS_FLSHD:
-					err = -ECANCELED;
-					break;
-				case REQ_STATUS_ERROR:
-					err = reqs[j].req->t_err;
-					break;
-				default:
-					BUG();
-					/*NOTREACHED*/
-			}
+			err = p9_check_req_errors(c, reqs[j].req);
 			if (err < 0)
 				goto freereq;
 			err = p9pdu_readf(reqs[j].req->rc, c->proto_version,
@@ -1505,29 +1550,7 @@ freereq:
 		clear_thread_flag(TIF_SIGPENDING);
 	}
 
-	/* Free request array, cancelling any requests still in flight
- 	 * due to error.
- 	 */
-	for (i = 0; i < nreqs; i++) {
-		int err2;
-
-		if (!reqs[i].req || IS_ERR(reqs[i].req))
-			continue;
-		if (c->trans_mod->cancel(c, reqs[i].req))
-			p9_client_flush(c, reqs[i].req);
-again2:
-		err2 = wait_event_timeout(reqs[i].wq,
-				reqs[i].req->status >= REQ_STATUS_RCVD, 10000);	
-		if (err2 == 0 && reqs[i].req->status < REQ_STATUS_RCVD) {
-			P9_DPRINTK(P9_DEBUG_ERROR,
-				   "cancel: waiting for tag %d status %d\n",
-				   reqs[i].req->tc->tag,
-				   reqs[i].req->status);
-			goto again2;
-		}
-		p9_free_req(c, reqs[i].req);
-	}
-	kfree (reqs);
+	p9_free_ioreq(fid, nreqs, reqs);
 
 	if (sigpending) {
 		spin_lock_irqsave(&current->sighand->siglock, flags);
@@ -1551,20 +1574,7 @@ static void p9_client_readpage_cb(struct p9_client *c, struct p9_req_t *req,
 	int err = 0, count;
 	char *dp = NULL;
 
-	switch (req->status) {
-		case REQ_STATUS_RCVD:
-			err = p9_check_errors(c, req);
-			break;
-		case REQ_STATUS_FLSHD:
-			err = -ECANCELED;
-			break;
-		case REQ_STATUS_ERROR:
-			err = req->t_err;
-			break;
-		default:
-			BUG();
-			/*NOTREACHED*/
-	}
+	err = p9_check_req_errors(c, req);
 	BUG_ON(err > 0);
 	if (!err) {
 		err = p9pdu_readf(req->rc, c->proto_version, "D", &count, &dp);
@@ -1692,6 +1702,114 @@ error:
 	return err;
 }
 EXPORT_SYMBOL(p9_client_write);
+
+int
+p9_client_writen(struct p9_fid *fid, char *data, const char __user *udata,
+						u64 offset, u32 count)
+{
+	int i, j, nreqs, err, total, eof;
+	struct p9_client *c = fid->clnt;
+	struct ioreq *reqs;
+	int sigpending;
+	unsigned long flags;
+	int dcount;
+
+        P9_DPRINTK(P9_DEBUG_9P, "fid %d offset %llu count %d\n", fid->fid,
+                                        (long long unsigned) offset, count);
+
+	if (signal_pending(current)) {
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+	} else
+		sigpending = 0;
+
+	err = p9_alloc_ioreq(fid, count, &nreqs, &reqs);
+	if (err < 0)
+		return err;
+
+	/* Send requests and receive replies concurrently using a
+	 * sliding window of c->rwdepth requests.
+	 * Replies are processed in the order sent.
+	 */
+	i = j = err = total = eof = 0;
+	while (j < nreqs && !(eof && j == i)) {
+		/* Send requests */
+		if (i < nreqs && !eof) {
+			P9_DPRINTK(P9_DEBUG_9P,
+				   ">>> TWRITE fid %d offset %llu count %d\n",
+				   fid->fid,
+				   (long long unsigned)offset + reqs[i].roffset,
+				   reqs[i].rcount);
+			reqs[i].req = p9_client_prepare_req(c, P9_TWRITE,
+						data ? "dqD" : "dqU",
+						fid->fid,
+						offset + reqs[i].roffset,
+						reqs[i].rcount,
+						(data ? data : udata)
+							+ reqs[i].roffset);
+			if (IS_ERR(reqs[i].req)) {
+				err = PTR_ERR(reqs[i].req); 
+				break;
+			}
+			reqs[i].req->aux = &reqs[i].wq;
+			reqs[i].req->client_cb = p9_client_cb;
+			err = c->trans_mod->request(c, reqs[i].req);
+			if (err < 0) {
+				if (err != -ERESTARTSYS)
+					c->status = Disconnected;
+				p9_free_req(c, reqs[i].req);
+				reqs[i].req = NULL;
+				break;
+			}
+			i++;
+		}
+		/* Receive replies */
+		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
+			BUG_ON (!reqs[j].req);
+			err = p9_wait_ioreq(&reqs[j]);
+			if (err < 0)
+				break;
+			err = p9_check_req_errors(c, reqs[j].req);
+			if (err < 0)
+				goto freereq;
+			err = p9pdu_readf(reqs[j].req->rc, c->proto_version,
+					  "d", &dcount);
+			if (err < 0) {
+				p9pdu_dump(1, reqs[j].req->rc);
+				goto freereq;
+			}
+			P9_DPRINTK(P9_DEBUG_9P, "<<< RWRITE count %d\n",
+				   dcount);
+			if (eof)
+				goto freereq;
+			total += dcount;
+			if (dcount < reqs[j].rcount)
+				eof = 1;
+freereq:
+			p9_free_req (c, reqs[j].req);
+			reqs[j].req = NULL;
+			if (err < 0)
+				break;
+			j++;
+		}
+	}
+
+	if ((err == -ERESTARTSYS)) {
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+	}
+
+	p9_free_ioreq(fid, nreqs, reqs);
+
+	if (sigpending) {
+		spin_lock_irqsave(&current->sighand->siglock, flags);
+		recalc_sigpending();
+		spin_unlock_irqrestore(&current->sighand->siglock, flags);
+	}
+
+        return err < 0 ? err : total;
+}
+EXPORT_SYMBOL(p9_client_writen);
 
 struct p9_wstat *p9_client_stat(struct p9_fid *fid)
 {

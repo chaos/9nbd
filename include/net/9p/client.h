@@ -240,6 +240,8 @@ int p9_client_read(struct p9_fid *fid, char *data, char __user *udata,
 							u64 offset, u32 count);
 int p9_client_readn(struct p9_fid *fid, char *data, char __user *udata,
 							u64 offset, u32 count);
+int p9_client_writen(struct p9_fid *fid, char *data, const char __user *udata,
+							u64 offset, u32 count);
 int p9_client_readpage(struct p9_fid *fid, u64 offset, struct page *page,
 	int len, void (*readpage_cb)(struct page *page, char *data, int len));
 
