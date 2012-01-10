@@ -97,7 +97,7 @@ int p9_idpool_get(struct p9_idpool *p)
 
 retry:
 	if (idr_pre_get(&p->pool, GFP_KERNEL) == 0)
-		return 0;
+		return -1;
 
 	spin_lock_irqsave(&p->lock, flags);
 
