@@ -1420,7 +1420,6 @@ p9_free_ioreq(struct p9_fid *fid, int nreqs, struct ioreq *reqs)
 			continue;
 		if (c->trans_mod->cancel(c, reqs[i].req))
 			p9_client_flush(c, reqs[i].req);
-		p9_wait_ioreq(&reqs[i]);
 		p9_free_req(c, reqs[i].req);
 	}
 	kfree (reqs);
