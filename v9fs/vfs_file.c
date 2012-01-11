@@ -381,6 +381,7 @@ v9fs_file_write(struct file *filp, const char __user * data,
 		size_t count, loff_t * offset)
 {
 	ssize_t retval;
+	loff_t i_size;
 	struct p9_fid *fid;
 	struct p9_client *clnt;
 	struct inode *inode = filp->f_path.dentry->d_inode;
@@ -408,13 +409,16 @@ v9fs_file_write(struct file *filp, const char __user * data,
 
 	if (retval > 0) {
 		pg_start = origin >> PAGE_CACHE_SHIFT;
-		pg_end = (origin + retval- 1) >> PAGE_CACHE_SHIFT;
+		pg_end = (origin + retval - 1) >> PAGE_CACHE_SHIFT;
 		if (inode->i_mapping && inode->i_mapping->nrpages)
 			invalidate_inode_pages2_range(inode->i_mapping,
 						      pg_start, pg_end);
 		*offset += retval;
-		i_size_write(inode, i_size_read(inode) + retval);
-		inode->i_blocks = (i_size_read(inode) + 512 - 1) >> 9;
+		i_size = i_size_read(inode);
+		if (*offset > i_size) {
+			inode_add_bytes(inode, *offset - i_size);
+			i_size_write(inode, *offset);
+		}
 	}
 out:
 	return retval;
