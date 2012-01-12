@@ -1,3 +1,8 @@
+In v9fs-2.6.38.5-12:
+* Make large writes asynchronous (issue 86)
+* fs/9p: Fix inode i_size update in file_write (backport)
+* fs/9p: Update zero-copy implementation in 9p (partial backport)
+
 In v9fs-2.6.38.5-11:
 * Make large reads asynchronous (issue 86)
 * Emit console messages on slow RPC response
