@@ -377,12 +377,14 @@ static void p9_free_req(struct p9_client *c, struct p9_req_t *r)
  * req: request received
  *
  */
-static void p9_client_cb(struct p9_client *c, struct p9_req_t *req, void *aux)
+void p9_client_cb(struct p9_client *c, struct p9_req_t *req, void *aux)
 {
 	P9_DPRINTK(P9_DEBUG_MUX, " tag %d\n", req->tc->tag);
 	wake_up((wait_queue_head_t *)aux);
 	P9_DPRINTK(P9_DEBUG_MUX, "wakeup: %d\n", req->tc->tag);
 }
+/* N.B. avoid missing symbol complaints from in-kernel 9pnet.ko */
+EXPORT_SYMBOL(p9_client_cb);
 
 /**
  * p9_parse_header - parse header arguments out of a packet
