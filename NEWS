@@ -1,3 +1,7 @@
+In v9fs-2.6.38.5-14:
+* Temporary workaround for transport hang (issue 65)
+* Possible locking fix for kernel panic in p9_client_cb() (issue 89)
+
 In v9fs-2.6.38.5-13:
 * Re-export module symbol p9_client_cb() to make in-kernel 9pnet.ko happy
 
