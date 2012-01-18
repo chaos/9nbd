@@ -640,6 +640,8 @@ again:
 	if (err == 0 && req->status < REQ_STATUS_RCVD) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "waiting for tag %d status %d\n",
 			    		   req->tc->tag, req->status);
+		if (c->trans_mod->poke)
+			c->trans_mod->poke (c, req);
 		goto again;
 	}
 	if (err > 0)
@@ -1365,6 +1367,7 @@ struct ioreq {
 	u32 rcount;
 	struct p9_req_t *req;
 	wait_queue_head_t wq;
+	struct p9_client *c;
 };
 
 static int
@@ -1389,6 +1392,7 @@ p9_alloc_ioreq(struct p9_fid *fid, u32 count, int *nreqsp,
 		else
 			reqs[i].rcount = rsize;
 		init_waitqueue_head(&reqs[i].wq);
+		reqs[i].c = fid->clnt;
 		/* alloc of p9_req_t is deferred until ready to send */
 	}
 	*nreqsp = nreqs;
@@ -1406,6 +1410,8 @@ again:
 	if (err == 0 && r->req->status < REQ_STATUS_RCVD) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "waiting for tag %d status %d\n",
 					   r->req->tc->tag, r->req->status);
+		if (r->c->trans_mod->poke)
+			r->c->trans_mod->poke (r->c, r->req);
 		goto again;
 	}
 	return err < 0 ? err : 0;

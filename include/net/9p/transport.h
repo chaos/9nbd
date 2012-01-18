@@ -52,6 +52,7 @@ struct p9_trans_module {
 	int (*create)(struct p9_client *, const char *, char *);
 	void (*close) (struct p9_client *);
 	int (*request) (struct p9_client *, struct p9_req_t *req);
+	int (*poke) (struct p9_client *, struct p9_req_t *req);
 	int (*cancel) (struct p9_client *, struct p9_req_t *req);
 };
 

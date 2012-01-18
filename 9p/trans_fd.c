@@ -685,6 +685,17 @@ static int p9_fd_request(struct p9_client *client, struct p9_req_t *req)
 	return 0;
 }
 
+static int p9_fd_poke(struct p9_client *client, struct p9_req_t *req)
+{
+	struct p9_trans_fd *ts = client->trans;
+	struct p9_conn *m = ts->conn;
+
+	schedule_work(&m->wq);
+	schedule_work(&m->rq);
+
+	return 0;
+}
+
 static int p9_fd_cancel(struct p9_client *client, struct p9_req_t *req)
 {
 	int ret = 1;
@@ -1015,6 +1026,7 @@ static struct p9_trans_module p9_tcp_trans = {
 	.create = p9_fd_create_tcp,
 	.close = p9_fd_close,
 	.request = p9_fd_request,
+	.poke = p9_fd_poke,
 	.cancel = p9_fd_cancel,
 	.owner = THIS_MODULE,
 };
@@ -1026,6 +1038,7 @@ static struct p9_trans_module p9_unix_trans = {
 	.create = p9_fd_create_unix,
 	.close = p9_fd_close,
 	.request = p9_fd_request,
+	.poke = p9_fd_poke,
 	.cancel = p9_fd_cancel,
 	.owner = THIS_MODULE,
 };
@@ -1037,6 +1050,7 @@ static struct p9_trans_module p9_fd_trans = {
 	.create = p9_fd_create,
 	.close = p9_fd_close,
 	.request = p9_fd_request,
+	.poke = p9_fd_poke,
 	.cancel = p9_fd_cancel,
 	.owner = THIS_MODULE,
 };
