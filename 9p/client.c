@@ -644,6 +644,15 @@ again:
 			c->trans_mod->poke (c, req);
 		goto again;
 	}
+	if (err == -ERESTARTSYS && c->status == Connected
+						&& type == P9_TFLUSH) {
+		P9_DPRINTK(P9_DEBUG_ERROR, "ignoring signal received while "
+					   "awaiting flush tag %d status %d\n",
+					   req->tc->tag, req->status);
+		sigpending = 1;
+		clear_thread_flag(TIF_SIGPENDING);
+		goto again;
+	}
 	if (err > 0)
 		err = 0;
 	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d returned %d\n",
