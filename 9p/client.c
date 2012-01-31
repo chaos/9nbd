@@ -380,7 +380,8 @@ static void p9_free_req(struct p9_client *c, struct p9_req_t *r)
 void p9_client_cb(struct p9_client *c, struct p9_req_t *req, void *aux)
 {
 	P9_DPRINTK(P9_DEBUG_MUX, " tag %d\n", req->tc->tag);
-	wake_up((wait_queue_head_t *)aux);
+	if (aux)
+		wake_up((wait_queue_head_t *)aux);
 	P9_DPRINTK(P9_DEBUG_MUX, "wakeup: %d\n", req->tc->tag);
 }
 /* N.B. avoid missing symbol complaints from in-kernel 9pnet.ko */
@@ -653,6 +654,7 @@ again:
 		clear_thread_flag(TIF_SIGPENDING);
 		goto again;
 	}
+	req->aux = NULL;
 	if (err > 0)
 		err = 0;
 	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d returned %d\n",
@@ -1526,6 +1528,7 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
 			BUG_ON (!reqs[j].req);
 			err = p9_wait_ioreq(&reqs[j]);
+			reqs[j].req->aux = NULL;
 			if (err < 0)
 				break;
 			err = p9_check_req_errors(c, reqs[j].req);
@@ -1783,6 +1786,7 @@ p9_client_writen(struct p9_fid *fid, char *data, const char __user *udata,
 		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
 			BUG_ON (!reqs[j].req);
 			err = p9_wait_ioreq(&reqs[j]);
+			reqs[j].req->aux = NULL;
 			if (err < 0)
 				break;
 			err = p9_check_req_errors(c, reqs[j].req);
