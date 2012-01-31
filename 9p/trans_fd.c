@@ -343,14 +343,20 @@ static void p9_read_work(struct work_struct *work)
 			"mux %p pkt: size: %d bytes tag: %d\n", m, n, tag);
 
 		m->req = p9_tag_lookup(m->client, tag);
-		if (!m->req || (m->req->status != REQ_STATUS_SENT &&
-					m->req->status != REQ_STATUS_FLSH)) {
+		if (!m->req) {
 			P9_DPRINTK(P9_DEBUG_ERROR, "Unexpected packet tag %d\n",
 								 tag);
 			err = -EIO;
 			goto error;
 		}
-
+		if (m->req->status != REQ_STATUS_SENT &&
+		    m->req->status != REQ_STATUS_FLSH) {
+			P9_DPRINTK(P9_DEBUG_ERROR, "Unexpected response to "
+						   "tag %d status %d\n",
+						   tag, m->req->status);
+			err = -EIO;
+			goto error;
+		}
 		if (m->req->rc == NULL) {
 			m->req->rc = kmalloc(sizeof(struct p9_fcall) +
 						m->client->msize, GFP_NOFS);
