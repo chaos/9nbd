@@ -218,12 +218,13 @@ static void p9_conn_cancel(struct p9_conn *m, int err)
 			req->t_err = err;
 		list_move(&req->req_list, &cancel_list);
 	}
+	spin_unlock_irqrestore(&m->client->lock, flags);
+
 	list_for_each_entry_safe(req, rtmp, &cancel_list, req_list) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "call back req %p\n", req);
 		list_del(&req->req_list);
 		req->client_cb(m->client, req, req->aux);
 	}
-	spin_unlock_irqrestore(&m->client->lock, flags);
 }
 
 static int
@@ -371,19 +372,19 @@ static void p9_read_work(struct work_struct *work)
 	}
 
 	/* not an else because some packets (like clunk) have no payload */
-	spin_lock(&m->client->lock);
 	if ((m->req) && (m->rpos == m->rsize)) { /* packet is read in */
 		P9_DPRINTK(P9_DEBUG_TRANS, "got new packet\n");
+		spin_lock(&m->client->lock);
 		if (m->req->status != REQ_STATUS_ERROR)
 			m->req->status = REQ_STATUS_RCVD;
 		list_del(&m->req->req_list);
+		spin_unlock(&m->client->lock);
 		m->req->client_cb(m->client, m->req, m->req->aux);
 		m->rbuf = NULL;
 		m->rpos = 0;
 		m->rsize = 0;
 		m->req = NULL;
 	}
-	spin_unlock(&m->client->lock);
 
 	if (!list_empty(&m->req_list)) {
 		if (test_and_clear_bit(Rpending, &m->wsched))
