@@ -350,7 +350,8 @@ static void p9_read_work(struct work_struct *work)
 			err = -EIO;
 			goto error;
 		}
-		if (m->req->status != REQ_STATUS_SENT) {
+		if (m->req->status != REQ_STATUS_SENT &&
+		    m->req->status != REQ_STATUS_FLSH) {
 			P9_DPRINTK(P9_DEBUG_ERROR, "Unexpected response to "
 						   "tag %d status %d\n",
 						   tag, m->req->status);
@@ -708,15 +709,16 @@ static int p9_fd_cancel(struct p9_client *client, struct p9_req_t *req)
 
 	P9_DPRINTK(P9_DEBUG_TRANS, "client %p req %p\n", client, req);
 
-	if (req->tc->id != P9_TCLUNK && req->tc->id != P9_TREMOVE) {
-		spin_lock(&client->lock);
-		if (req->status == REQ_STATUS_UNSENT) {
-			list_del(&req->req_list);
-			req->status = REQ_STATUS_FLSHD;
-			ret = 0;
-		}
-		spin_unlock(&client->lock);
-	}
+	spin_lock(&client->lock);
+
+	if (req->status == REQ_STATUS_UNSENT) {
+		list_del(&req->req_list);
+		req->status = REQ_STATUS_FLSHD;
+		ret = 0;
+	} else if (req->status == REQ_STATUS_SENT)
+		req->status = REQ_STATUS_FLSH;
+
+	spin_unlock(&client->lock);
 
 	return ret;
 }

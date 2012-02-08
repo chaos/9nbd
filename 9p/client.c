@@ -529,7 +529,7 @@ static int p9_client_flush(struct p9_client *c, struct p9_req_t *oldreq)
 	/* if we haven't received a response for oldreq,
 	   remove it from the list. */
 	spin_lock(&c->lock);
-	if (oldreq->status < REQ_STATUS_RCVD)
+	if (oldreq->status == REQ_STATUS_FLSH)
 		list_del(&oldreq->req_list);
 	spin_unlock(&c->lock);
 
