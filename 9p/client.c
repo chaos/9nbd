@@ -1263,6 +1263,7 @@ int p9_client_clunk(struct p9_fid *fid)
 	int err;
 	struct p9_client *clnt;
 	struct p9_req_t *req;
+	int retries = 0;
 
 	if (!fid) {
 		P9_EPRINTK(KERN_WARNING, "Trying to clunk with NULL fid\n");
@@ -1270,6 +1271,7 @@ int p9_client_clunk(struct p9_fid *fid)
 		return 0;
 	}
 
+again:
 	P9_DPRINTK(P9_DEBUG_9P, ">>> TCLUNK fid %d\n", fid->fid);
 	err = 0;
 	clnt = fid->clnt;
@@ -1287,8 +1289,13 @@ int p9_client_clunk(struct p9_fid *fid)
 error:
 	/*
 	 * Fid is not valid even after a failed clunk
+	 * If interrupted, retry once then give up and leak fid until umount
 	 */
-	p9_fid_destroy(fid);
+	if (err == -ERESTARTSYS) {
+		if (retries++ == 0)
+			goto again;
+	} else
+		p9_fid_destroy(fid);
 	return err;
 }
 EXPORT_SYMBOL(p9_client_clunk);
@@ -1313,7 +1320,10 @@ int p9_client_remove(struct p9_fid *fid)
 
 	p9_free_req(clnt, req);
 error:
-	p9_fid_destroy(fid);
+	if (err == -ERESTARTSYS)
+		p9_client_clunk(fid);
+	else
+		p9_fid_destroy(fid);
 	return err;
 }
 EXPORT_SYMBOL(p9_client_remove);
