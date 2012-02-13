@@ -114,10 +114,10 @@ enum p9_req_status_t {
 struct p9_req_t {
 	int status;
 	int t_err;
+	wait_queue_head_t *wq;
 	struct p9_fcall *tc;
 	struct p9_fcall *rc;
-	void	(*client_cb)(struct p9_client *client,
-			     struct p9_req_t *req, void *aux);
+	void (*client_cb)(struct p9_client *client, struct p9_req_t *req);
 	void *aux;
 
 	struct list_head req_list;

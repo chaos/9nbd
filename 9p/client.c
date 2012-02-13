@@ -233,6 +233,12 @@ static struct p9_req_t *p9_tag_alloc(struct p9_client *c, u16 tag)
 
 	req = &c->reqs[row][col];
 	if (!req->tc) {
+		req->wq = kmalloc(sizeof(wait_queue_head_t), GFP_NOFS);
+		if (!req->wq) {
+			pr_err("Couldn't grow tag array\n");
+			return ERR_PTR(-ENOMEM);
+		}
+		init_waitqueue_head(req->wq);
 		req->tc = kmalloc(sizeof(struct p9_fcall)+c->msize,
 								GFP_NOFS);
 		req->rc = kmalloc(sizeof(struct p9_fcall)+c->msize,
@@ -241,7 +247,9 @@ static struct p9_req_t *p9_tag_alloc(struct p9_client *c, u16 tag)
 			printk(KERN_ERR "Couldn't grow tag array\n");
 			kfree(req->tc);
 			kfree(req->rc);
+			kfree(req->wq);
 			req->tc = req->rc = NULL;
+			req->wq = NULL;
 			return ERR_PTR(-ENOMEM);
 		}
 		req->tc->sdata = (char *) req->tc + sizeof(struct p9_fcall);
@@ -377,11 +385,10 @@ static void p9_free_req(struct p9_client *c, struct p9_req_t *r)
  * req: request received
  *
  */
-void p9_client_cb(struct p9_client *c, struct p9_req_t *req, void *aux)
+void p9_client_cb(struct p9_client *c, struct p9_req_t *req)
 {
 	P9_DPRINTK(P9_DEBUG_MUX, " tag %d\n", req->tc->tag);
-	if (aux)
-		wake_up((wait_queue_head_t *)aux);
+	wake_up(req->wq);
 	P9_DPRINTK(P9_DEBUG_MUX, "wakeup: %d\n", req->tc->tag);
 }
 /* N.B. avoid missing symbol complaints from in-kernel 9pnet.ko */
@@ -607,7 +614,6 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 	int sigpending, err;
 	struct p9_req_t *req;
 	unsigned long flags;
-	wait_queue_head_t wq;
 
 	P9_DPRINTK(P9_DEBUG_MUX, "client %p op %d\n", c, type);
 
@@ -623,8 +629,6 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 	} else
 		sigpending = 0;
 
-	init_waitqueue_head(&wq);
-	req->aux = &wq;
 	req->client_cb = p9_client_cb;
 
 	err = c->trans_mod->request(c, req);
@@ -634,9 +638,8 @@ p9_client_rpc(struct p9_client *c, int8_t type, const char *fmt, ...)
 		goto reterr;
 	}
 
-	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d\n", &wq, req->tc->tag);
 again:
-	err = wait_event_interruptible_timeout(wq,
+	err = wait_event_interruptible_timeout(*req->wq,
 				req->status >= REQ_STATUS_RCVD, 10000);
 	if (err == 0 && req->status < REQ_STATUS_RCVD) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "waiting for tag %d status %d\n",
@@ -654,11 +657,8 @@ again:
 		clear_thread_flag(TIF_SIGPENDING);
 		goto again;
 	}
-	req->aux = NULL;
 	if (err > 0)
 		err = 0;
-	P9_DPRINTK(P9_DEBUG_MUX, "wait %p tag: %d returned %d\n",
-						&wq, req->tc->tag, err);
 
 	if (req->status == REQ_STATUS_ERROR) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "req_status error %d\n", req->t_err);
@@ -1387,7 +1387,6 @@ struct ioreq {
 	u64 roffset;
 	u32 rcount;
 	struct p9_req_t *req;
-	wait_queue_head_t wq;
 	struct p9_client *c;
 };
 
@@ -1412,7 +1411,6 @@ p9_alloc_ioreq(struct p9_fid *fid, u32 count, int *nreqsp,
 			reqs[i].rcount = count % rsize;
 		else
 			reqs[i].rcount = rsize;
-		init_waitqueue_head(&reqs[i].wq);
 		reqs[i].c = fid->clnt;
 		/* alloc of p9_req_t is deferred until ready to send */
 	}
@@ -1426,11 +1424,11 @@ p9_wait_ioreq(struct ioreq *r)
 {
 	int err;
 again:
-	err = wait_event_interruptible_timeout(r->wq,
+	err = wait_event_interruptible_timeout(*r->req->wq,
 				r->req->status >= REQ_STATUS_RCVD, 10000);
 	if (err == 0 && r->req->status < REQ_STATUS_RCVD) {
 		P9_DPRINTK(P9_DEBUG_ERROR, "waiting for tag %d status %d\n",
-					   r->req->tc->tag, r->req->status);
+					r->req->tc->tag, r->req->status);
 		if (r->c->trans_mod->poke)
 			r->c->trans_mod->poke (r->c, r->req);
 		goto again;
@@ -1522,7 +1520,6 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 				err = PTR_ERR(reqs[i].req); 
 				break;
 			}
-			reqs[i].req->aux = &reqs[i].wq;
 			reqs[i].req->client_cb = p9_client_cb;
 			err = c->trans_mod->request(c, reqs[i].req);
 			if (err < 0) {
@@ -1538,7 +1535,6 @@ p9_client_readn(struct p9_fid *fid, char *data, char __user *udata, u64 offset,
 		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
 			BUG_ON (!reqs[j].req);
 			err = p9_wait_ioreq(&reqs[j]);
-			reqs[j].req->aux = NULL;
 			if (err < 0)
 				break;
 			err = p9_check_req_errors(c, reqs[j].req);
@@ -1596,10 +1592,9 @@ struct readpage_info {
 	void (*cb)(struct page *page, char *data, int len);
 };
 
-static void p9_client_readpage_cb(struct p9_client *c, struct p9_req_t *req,
-				  void *aux)
+static void p9_client_readpage_cb(struct p9_client *c, struct p9_req_t *req)
 {
-	struct readpage_info *info = (struct readpage_info *)aux;
+	struct readpage_info *info = (struct readpage_info *)req->aux;
 	int err = 0, count;
 	char *dp = NULL;
 
@@ -1780,7 +1775,6 @@ p9_client_writen(struct p9_fid *fid, char *data, const char __user *udata,
 				err = PTR_ERR(reqs[i].req); 
 				break;
 			}
-			reqs[i].req->aux = &reqs[i].wq;
 			reqs[i].req->client_cb = p9_client_cb;
 			err = c->trans_mod->request(c, reqs[i].req);
 			if (err < 0) {
@@ -1796,7 +1790,6 @@ p9_client_writen(struct p9_fid *fid, char *data, const char __user *udata,
 		if (j < i && (i - j == c->rwdepth || i == nreqs || eof)) {
 			BUG_ON (!reqs[j].req);
 			err = p9_wait_ioreq(&reqs[j]);
-			reqs[j].req->aux = NULL;
 			if (err < 0)
 				break;
 			err = p9_check_req_errors(c, reqs[j].req);
