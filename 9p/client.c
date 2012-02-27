@@ -1461,9 +1461,6 @@ p9_check_req_errors(struct p9_client *c, struct p9_req_t *req)
 		case REQ_STATUS_RCVD:
 			err = p9_check_errors(c, req);
 			break;
-		case REQ_STATUS_FLSHD:
-			err = -ECANCELED;
-			break;
 		case REQ_STATUS_ERROR:
 			err = req->t_err;
 			break;
