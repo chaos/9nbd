@@ -55,7 +55,7 @@ enum {
 	/* String options */
 	Opt_uname, Opt_remotename, Opt_trans, Opt_cache, Opt_cachetag,
 	/* Options that take no arguments */
-	Opt_nodevmap,
+	Opt_nodevmap, Opt_asyncreadpage,
 	/* Cache options */
 	Opt_cache_loose, Opt_fscache,
 	/* Access options */
@@ -72,6 +72,7 @@ static const match_table_t tokens = {
 	{Opt_uname, "uname=%s"},
 	{Opt_remotename, "aname=%s"},
 	{Opt_nodevmap, "nodevmap"},
+	{Opt_asyncreadpage, "asyncreadpage"},
 	{Opt_cache, "cache=%s"},
 	{Opt_cache_loose, "loose"},
 	{Opt_fscache, "fscache"},
@@ -153,6 +154,9 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 			break;
 		case Opt_nodevmap:
 			v9ses->nodev = 1;
+			break;
+		case Opt_asyncreadpage:
+			v9ses->asyncreadpage = 1;
 			break;
 		case Opt_cache_loose:
 			v9ses->cache = CACHE_LOOSE;

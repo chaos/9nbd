@@ -132,6 +132,7 @@ static int v9fs_vfs_readpage(struct file *filp, struct page *page)
 	int retval;
 	struct inode *inode;
 	struct p9_fid *fid;
+	struct v9fs_session_info *v9ses;
 
 	inode = page->mapping->host;
 	P9_DPRINTK(P9_DEBUG_VFS, "\n");
@@ -142,9 +143,11 @@ static int v9fs_vfs_readpage(struct file *filp, struct page *page)
 	if (retval == 0)
 		return retval;
 
+	v9ses = v9fs_inode2v9ses(inode);
 	fid = filp->private_data;
-	if (fid->clnt->msize - P9_IOHDRSZ < PAGE_CACHE_SIZE ||
-			(fid->iounit > 0 && fid->iounit < PAGE_CACHE_SIZE))
+	if (!v9ses->asyncreadpage
+			|| fid->clnt->msize - P9_IOHDRSZ < PAGE_CACHE_SIZE
+			|| (fid->iounit > 0 && fid->iounit < PAGE_CACHE_SIZE))
 		retval = v9fs_vfs_readpage_sync(filp, page);
 	else
 		retval = v9fs_vfs_readpage_async(filp, page);

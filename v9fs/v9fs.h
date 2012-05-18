@@ -65,6 +65,7 @@ enum p9_cache_modes {
  * struct v9fs_session_info - per-instance session information
  * @flags: session options of type &p9_session_flags
  * @nodev: set to 1 to disable device mapping
+ * @asyncreadpage: set to 1 to enable asynchronous readpage implementation
  * @debug: debug level
  * @afid: authentication handle
  * @cache: cache mode of type &p9_cache_modes
@@ -91,6 +92,7 @@ struct v9fs_session_info {
 	/* options */
 	unsigned char flags;
 	unsigned char nodev;
+	unsigned char asyncreadpage;
 	unsigned short debug;
 	unsigned int afid;
 	unsigned int cache;
