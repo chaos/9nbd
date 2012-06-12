@@ -10,6 +10,8 @@
  *            Cleanup PARANOIA usage & code.
  * 2004/02/19 Paul Clements
  *            Removed PARANOIA, plus various cleanup and comments
+ * 2012/07/05 Jim Garlick
+ *            Overhaul for 9P transport
  */
 
 #ifndef LINUX_NBD_H
@@ -17,24 +19,22 @@
 
 #include <linux/types.h>
 
-#define NBD_SET_SOCK	_IO( 0xab, 0 )
+#define NBD_SET_SOCK	_IO( 0xab, 0 )	/* deprecated */
 #define NBD_SET_BLKSIZE	_IO( 0xab, 1 )
 #define NBD_SET_SIZE	_IO( 0xab, 2 )
-#define NBD_DO_IT	_IO( 0xab, 3 )
-#define NBD_CLEAR_SOCK	_IO( 0xab, 4 )
-#define NBD_CLEAR_QUE	_IO( 0xab, 5 )
-#define NBD_PRINT_DEBUG	_IO( 0xab, 6 )
+#define NBD_DO_IT	_IO( 0xab, 3 )	/* deprecated */
+#define NBD_CLEAR_SOCK	_IO( 0xab, 4 )	/* deprecated */
+#define NBD_CLEAR_QUE	_IO( 0xab, 5 )	/* deprecated */
+#define NBD_PRINT_DEBUG	_IO( 0xab, 6 )	/* deprecated */
 #define NBD_SET_SIZE_BLOCKS	_IO( 0xab, 7 )
-#define NBD_DISCONNECT  _IO( 0xab, 8 )
+#define NBD_DISCONNECT  _IO( 0xab, 8 )	/* deprecated */
 #define NBD_SET_TIMEOUT _IO( 0xab, 9 )
 
-enum {
-	NBD_CMD_READ = 0,
-	NBD_CMD_WRITE = 1,
-	NBD_CMD_DISC = 2
-};
+#define NBD_SET_OPTS	_IOW( 0xab, 10, char* )
+#define NBD_SET_SPEC	_IOW( 0xab, 11, char* )
 
-#define nbd_cmd(req) ((req)->cmd[0])
+#define NBD_START	_IO( 0xab, 12 )
+#define NBD_STOP 	_IO( 0xab, 13 )
 
 /* userspace doesn't need the nbd_device structure */
 #ifdef __KERNEL__
@@ -50,53 +50,26 @@ struct request;
 
 struct nbd_device {
 	int flags;
-	int harderror;		/* Code of hard error			*/
-	struct socket * sock;
-	struct file * file; 	/* If == NULL, device is not ready, yet	*/
 	int magic;
 
 	spinlock_t queue_lock;
-	struct list_head queue_head;	/* Requests waiting result */
-	struct request *active_req;
-	wait_queue_head_t active_wq;
 	struct list_head waiting_queue;	/* Requests to be sent */
 	wait_queue_head_t waiting_wq;
 
-	struct mutex tx_lock;
+	struct task_struct *recov_kt;
+	wait_queue_head_t recov_wq;
+
 	struct gendisk *disk;
 	int blksize;
 	u64 bytesize;
-	pid_t pid; /* pid of nbd-client, if attached */
 	int xmit_timeout;
+
+	int ses_count;
+
+	char *plan9_spec;
+	char *plan9_opts;
 };
 
 #endif
 
-/* These are sent over the network in the request/reply magic fields */
-
-#define NBD_REQUEST_MAGIC 0x25609513
-#define NBD_REPLY_MAGIC 0x67446698
-/* Do *not* use magics: 0x12560953 0x96744668. */
-
-/*
- * This is the packet used for communication between client and
- * server. All data are in network byte order.
- */
-struct nbd_request {
-	__be32 magic;
-	__be32 type;	/* == READ || == WRITE 	*/
-	char handle[8];
-	__be64 from;
-	__be32 len;
-} __attribute__((packed));
-
-/*
- * This is the reply packet that nbd-server sends back to the client after
- * it has completed an I/O request (or an error occurs).
- */
-struct nbd_reply {
-	__be32 magic;
-	__be32 error;		/* 0 = ok, else error	*/
-	char handle[8];		/* handle you got from request	*/
-};
 #endif

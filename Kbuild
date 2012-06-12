@@ -8,7 +8,7 @@ EXTRA_CFLAGS := \
 	-include $(src)/include/net/9p/transport.h \
 	-include $(src)/include/linux/nbd.h
 
-obj-m := 9pnet.o 9p.o 9pnet_rdma.o 9nbd.o
+obj-m := 9pnet.o 9p.o 9pnet_rdma.o 9pbd.o
 
 # CONFIG_NET_9P
 # CONFIG_NET_9P_VIRTIO
@@ -47,5 +47,5 @@ obj-m := 9pnet.o 9p.o 9pnet_rdma.o 9nbd.o
 #	v9fs/xattr.o
 #	v9fs/xattr_user.o
 
-9nbd-objs := \
+9pbd-objs := \
 	block/nbd.o
