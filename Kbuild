@@ -5,9 +5,10 @@ EXTRA_CFLAGS := \
 	-include $(src)/rhel6-compat.h \
 	-include $(src)/include/net/9p/9p.h \
 	-include $(src)/include/net/9p/client.h \
-	-include $(src)/include/net/9p/transport.h
+	-include $(src)/include/net/9p/transport.h \
+	-include $(src)/include/linux/nbd.h
 
-obj-m := 9pnet.o 9p.o 9pnet_rdma.o
+obj-m := 9pnet.o 9p.o 9pnet_rdma.o 9nbd.o
 
 # CONFIG_NET_9P
 # CONFIG_NET_9P_VIRTIO
@@ -45,3 +46,6 @@ obj-m := 9pnet.o 9p.o 9pnet_rdma.o
 
 #	v9fs/xattr.o
 #	v9fs/xattr_user.o
+
+9nbd-objs := \
+	block/nbd.o
