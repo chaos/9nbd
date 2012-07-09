@@ -36,7 +36,7 @@
 #include <asm/uaccess.h>
 #include <asm/types.h>
 
-#include <linux/nbd.h>
+#include <linux/9nbd.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 
@@ -71,7 +71,7 @@ typedef enum {
 
 struct session_struct {
 	struct task_struct *kt;		
-	struct nbd_device *nbd;
+	struct p9_nbd_device *nbd;
 	session_state_t state;
 	unsigned long start;	/* jiffies when session became busy */
 	struct request *req;	/* request being processed by session */
@@ -79,8 +79,18 @@ struct session_struct {
 	struct list_head list;
 };
 
+#define REQ_SPECIAL		ERR_PTR(-42)
+
+static void session_busy_setreq(struct session_struct *sp, struct request *req);
+static void session_busy(struct session_struct *sp);
+static int session_cont(struct session_struct *sp);
+static int session_idle(struct session_struct *sp);
+static int session_idle_getreq(struct session_struct *sp, struct request **rp);
+static int session_idle_setsize(struct session_struct *sp, u64 filesize);
+static void session_fail(struct session_struct *sp);
+
 static unsigned int nbds_max = 16;
-static struct nbd_device *nbd_dev;
+static struct p9_nbd_device *nbd_dev;
 static int max_part;
 
 /*
@@ -99,15 +109,7 @@ static DEFINE_SPINLOCK(nbd_lock);
 static const char *ioctl_cmd_to_ascii(int cmd)
 {
 	switch (cmd) {
-	case NBD_SET_SOCK: return "set-sock";
 	case NBD_SET_BLKSIZE: return "set-blksize";
-	case NBD_SET_SIZE: return "set-size";
-	case NBD_DO_IT: return "do-it";
-	case NBD_CLEAR_SOCK: return "clear-sock";
-	case NBD_CLEAR_QUE: return "clear-que";
-	case NBD_PRINT_DEBUG: return "print-debug";
-	case NBD_SET_SIZE_BLOCKS: return "set-size-blocks";
-	case NBD_DISCONNECT: return "disconnect";
 	case NBD_SET_SPEC: return "set-spec";
 	case NBD_SET_OPTS: return "set-opts";
 	case NBD_START: return "start";
@@ -120,20 +122,23 @@ static const char *ioctl_cmd_to_ascii(int cmd)
 
 #endif /* NDEBUG */
 
-static void nbd_end_request(struct request *req)
+static void nbd_end_request(struct request *req, int errnum)
 {
-	int error = req->errors ? -EIO : 0;
 	struct request_queue *q = req->q;
 	unsigned long flags;
 
-	dprintk(DBG_BLKDEV, "%s: request %p: %s\n", req->rq_disk->disk_name,
-			req, error ? "failed" : "done");
+	dprintk(DBG_BLKDEV, "%s: request %p: %d\n", req->rq_disk->disk_name,
+			req, errnum);
 
+	req->errors =  (errnum == 0) ? 0 : 1;
 	spin_lock_irqsave(q->queue_lock, flags);
-	__blk_end_request_all(req, error);
+	__blk_end_request_all(req, errnum);
 	spin_unlock_irqrestore(q->queue_lock, flags);
 }
 
+/* Get value of key from comma-delimited option list.
+ * Caller must kfree value.
+ */
 static int plan9_parseopt (char *opts, char *key, char **valp)
 {
 	char *cpy, *options, *k, *v;
@@ -170,44 +175,18 @@ error:
 	return err;
 }
 
-#ifndef P9_DOTL_RDONLY
-#define P9_DOTL_RDONLY 00000000
-#endif
-#if 0
-static int plan9_getsize(struct nbd_device *nbd, struct p9_fid *fid)
+static int plan9_create(struct session_struct *sp, struct p9_client **cp)
 {
-	struct p9_stat_dotl *sb;
-
-	dprintk(DBG_PLAN9, "%s: p9_client_getattr_dotl\n",
-		nbd->disk->disk_name);
-	sb = p9_client_getattr_dotl(fid, P9_STATS_SIZE);
-	if (IS_ERR(sb))
-		return PTR_ERR(sb);
-	nbd->bytesize = sb->st_size;
-	nbd->bytesize &= ~((u64)nbd->blksize-1);
-
-	return 0;
-}
-#endif
-static int plan9_attach(struct nbd_device *nbd, struct p9_fid **fp)
-{
+	struct p9_nbd_device *nbd = sp->nbd;
 	struct p9_client *clnt = NULL;
-	struct p9_fid *fid = NULL;
 	int err;
 
-	char *aname = NULL;
-	
-	err = plan9_parseopt(nbd->plan9_opts, "aname", &aname);
-	if (err < 0)
-		goto error;
 	dprintk(DBG_PLAN9, "%s: p9_client_create %s %s\n",
-		nbd->disk->disk_name, nbd->plan9_spec, nbd->plan9_opts);
-	clnt = p9_client_create(nbd->plan9_spec, nbd->plan9_opts);
-	if (IS_ERR(clnt)) {
-		err = PTR_ERR(clnt);
-		clnt = NULL;
-		goto error;
-	}
+		nbd->disk->disk_name, nbd->p9_spec, nbd->p9_opts);
+	session_busy(sp);
+	clnt = p9_client_create(nbd->p9_spec, nbd->p9_opts);
+	if (IS_ERR(clnt))
+		return PTR_ERR(clnt);
 	if (clnt->msize - P9_IOHDRSZ < nbd->blksize) {
 		err = -EINVAL;
 		goto error;
@@ -216,54 +195,92 @@ static int plan9_attach(struct nbd_device *nbd, struct p9_fid **fp)
 		err = -EINVAL;
 		goto error;
 	}
+	if (session_idle(sp) < 0) {
+		err = -ETIMEDOUT;
+		goto error;
+	}
+	*cp = clnt;
+	return 0;
+error:
+	if (clnt)
+		p9_client_destroy(clnt);
+	return err;
+}
+
+static int plan9_attach(struct session_struct *sp, struct p9_client *clnt,
+			struct p9_fid **fp)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+	char *aname = NULL;
+	struct p9_fid *fid = NULL;
+	int err;
+	
+	err = plan9_parseopt(nbd->p9_opts, "aname", &aname);
+	if (err < 0)
+		goto error;
 	dprintk(DBG_PLAN9, "%s: p9_client_attach %s\n", nbd->disk->disk_name,
 		aname);
+	session_busy(sp);
 	fid = p9_client_attach(clnt, NULL, NULL, 0, aname);
 	if (IS_ERR(fid)) {
 		err = PTR_ERR(fid);
 		fid = NULL;
 		goto error;
 	}
+	if (session_idle(sp) < 0) {
+		err = -ETIMEDOUT;
+		goto error;
+	}
 	kfree(aname);
 	*fp = fid;
 	return 0;
-error: 
+error:
 	if (fid)
-		(void)p9_client_clunk(fid);
-	if (clnt)
-		p9_client_destroy(clnt);
+		p9_client_clunk(fid);
 	if (aname)
 		kfree(aname);
 	return err;
 }
 
-static void plan9_detach(struct nbd_device *nbd, struct p9_fid *fid)
+static int plan9_getsize(struct session_struct *sp, struct p9_fid *fid)
 {
-	struct p9_client *clnt = fid->clnt;
+	struct p9_nbd_device *nbd = sp->nbd;
+	struct p9_stat_dotl *sb = NULL;
+	int err;
 
-	dprintk(DBG_PLAN9, "%s: p9_client_clunk\n", nbd->disk->disk_name);
-	p9_client_clunk(fid);
-
-	dprintk(DBG_PLAN9, "%s: p9_client_destroy\n", nbd->disk->disk_name);
-	p9_client_destroy(clnt);
+	dprintk(DBG_PLAN9, "%s: p9_client_getattr_dotl\n",
+		nbd->disk->disk_name);
+	session_busy(sp);
+	sb = p9_client_getattr_dotl(fid, P9_STATS_SIZE);
+	if (IS_ERR(sb)) {
+		err = PTR_ERR(sb);
+		sb = NULL;
+		goto error;
+	}
+	if (session_idle_setsize(sp, sb->st_size) < 0) {
+		err = -ETIMEDOUT;
+		goto error;
+	}
+	kfree(sb);
+	return 0;
+error:
+	if (sb)
+		kfree(sb);
+	return 0;
 }
 
-static int plan9_request (struct nbd_device *nbd, struct p9_fid *fid,
-			  int direction, u64 offset, int length, void *buf)
+static int plan9_open(struct session_struct *sp, struct p9_fid *fid)
 {
-	int n;
+	struct p9_nbd_device *nbd = sp->nbd;
+	int err;
 
-	do {
-		if (direction == WRITE)
-			n = p9_client_write(fid, buf, NULL, offset, length);
-		else
-			n = p9_client_read(fid, buf, NULL, offset, length);
-		if (n <= 0)
-			return -1;
-		buf += n;
-		offset += n;
-		length -= n;
-	} while (length > 0);
+	dprintk(DBG_PLAN9, "%s: p9_client_open\n", nbd->disk->disk_name);
+	session_busy(sp);
+	err = p9_client_open(fid, P9_DOTL_RDONLY);
+	if (err < 0)
+		return err;
+	if (session_idle(sp) < 0)
+		return -ETIMEDOUT;
 	return 0;
 }
 
@@ -271,14 +288,14 @@ static void memcpy_fromreq(void *buf, struct request *req)
 {
 	struct bio_vec *bvec;
 	struct req_iterator iter;
-	int offset = 0;
+	int off = 0;
 	void *kaddr;
 
 	rq_for_each_segment(bvec, req, iter) {
 		kaddr = kmap(bvec->bv_page);
-		memcpy(buf + offset, kaddr + bvec->bv_offset, bvec->bv_len);
+		memcpy(buf + off, kaddr + bvec->bv_offset, bvec->bv_len);
 		kunmap(bvec->bv_page);
-		offset += bvec->bv_len;
+		off += bvec->bv_len;
 	}
 }
 
@@ -286,91 +303,98 @@ static void memcpy_toreq(struct request *req, void *buf)
 {
 	struct bio_vec *bvec;
 	struct req_iterator iter;
-	int offset = 0;
+	int off = 0;
 	void *kaddr;
 
 	rq_for_each_segment(bvec, req, iter) {
 		kaddr = kmap(bvec->bv_page);
-		memcpy(kaddr + bvec->bv_offset, buf + offset, bvec->bv_len);
+		memcpy(kaddr + bvec->bv_offset, buf + off, bvec->bv_len);
 		kunmap(bvec->bv_page);
-		offset += bvec->bv_len;
+		off += bvec->bv_len;
 	}
 }
 
-#define REQ_CONNECT	ERR_PTR(-42) /* sp->req only */
-
-/* Put session in the busy state, recording start time and in-flight request.
- */
-static void session_busy(struct session_struct *sp, struct request *req)
+static int _p9_ioreq (struct p9_fid *fid, int dir, void *buf, u64 off, int len)
 {
-	struct nbd_device *nbd = sp->nbd;
+	int n;
 
-	spin_lock_irq(&nbd->queue_lock);
-	sp->req = req;
-	sp->start = jiffies;
-	sp->state = S_BUSY;
-	spin_unlock_irq(&nbd->queue_lock);
-	wake_up(&nbd->recov_wq);
-}
-
-/* Put session in idle state, setting rp to completed request.
- * Return 0 on success, -1 if recov thread timed out the request and
- * returned it to the waiting_queue.
- */
-static int session_idle(struct session_struct *sp, struct request **rp)
-{
-	struct nbd_device *nbd = sp->nbd;
-	int res = -1;
-
-	spin_lock_irq(&nbd->queue_lock);
-	if (sp->req) {
-		*rp = sp->req;
-		sp->req = NULL;
-		sp->state = S_IDLE;
-		res = 0;
+	if (dir == WRITE) {
+		n = p9_client_write(fid, buf, NULL, off, len);
+	} else {
+		n = p9_client_read(fid, buf, NULL, off, len);
+		if (n == 0)
+			return -EIO;
 	}
-	spin_unlock_irq(&nbd->queue_lock);
-	if (res == 0)
-		wake_up(&nbd->recov_wq);
-	return res;
+	return n;
 }
 
-/* Put session in the fail state.
- * From here, the session just waits to be cleaned up by recov thread.
- */
-static void session_fail(struct session_struct *sp)
+static int plan9_request (struct session_struct *sp, struct p9_fid *fid,
+			  void *buf, struct request *req, int *ep)
 {
-	struct nbd_device *nbd = sp->nbd;
+	u64 off = (u64)blk_rq_pos(req) << 9;
+	int dir = rq_data_dir(req);
+	int len = blk_rq_bytes(req);	
+	int n, tot = 0, err = 0;
 
-	spin_lock_irq(&nbd->queue_lock);
-	sp->state = S_FAIL;
-	spin_unlock_irq(&nbd->queue_lock);
-	wake_up(&nbd->recov_wq);
+	if (dir == WRITE)
+		memcpy_fromreq(buf, req);
+	session_busy_setreq(sp, req);
+	req = NULL;/* reminder not to access until after session_idle_getreq */
+	do {
+		n = _p9_ioreq(fid, dir, buf + tot, off + tot, len - tot);
+		if (n < 0) {
+			err = n;
+			goto error;
+		}
+		tot += n;
+		if (tot < len && session_cont(sp) < 0) {
+			err = -ETIMEDOUT;
+			goto error;
+		}
+	} while (tot < len);
+	if (session_idle_getreq(sp, &req) < 0) {
+		err = -ETIMEDOUT;
+		goto error;
+	}
+	if (dir == READ)
+		memcpy_toreq(req, buf);
+	*ep = 0;
+	return 0;
+error:
+	switch (err) {
+		case -EROFS:
+		case -ENOSPC:
+			if (session_idle_getreq(sp, &req) < 0)
+				return -ETIMEDOUT;
+			*ep = err;
+			return 0; /* only fail the block request */
+		default:
+			return err; /* fail the session */
+	}
 }
 
 static int session_thread(void *data)
 {
 	struct session_struct *sp = data;
-	struct nbd_device *nbd = sp->nbd;
+	struct p9_nbd_device *nbd = sp->nbd;
+	struct p9_client *clnt = NULL;
 	struct p9_fid *fid = NULL;
 	void *buf = NULL;
 	u32 bufsize = (u32)BLK_SAFE_MAX_SECTORS << 9;
 	struct request *req;
+	int err;
 
 	set_user_nice(current, -20);
 
 	dprintk(DBG_RECOV, "%s: ses%d start\n", nbd->disk->disk_name, sp->num);
 
-	session_busy(sp, REQ_CONNECT);
-	if (plan9_attach(nbd, &fid) < 0)
+	if (plan9_create(sp, &clnt) < 0)
 		goto fail;
-	if (session_idle(sp, &req) < 0)
+	if (plan9_attach(sp, clnt, &fid) < 0)
 		goto fail;
-
-	session_busy(sp, REQ_CONNECT);
-	if (p9_client_open(fid, P9_DOTL_RDONLY) < 0)
+	if (plan9_getsize(sp, fid) < 0)
 		goto fail;
-	if (session_idle(sp, &req) < 0)
+	if (plan9_open(sp, fid) < 0)
 		goto fail;
 
 	buf = kmalloc(bufsize, GFP_KERNEL);
@@ -400,48 +424,42 @@ static int session_thread(void *data)
 		if (!req)
 			continue;
 		if (req->cmd_type != REQ_TYPE_FS) {
-			req->errors = 1;
-			nbd_end_request(req);
+			nbd_end_request(req, -EIO);
 			continue;
 		}
 		if (rq_data_dir(req) == WRITE && nbd->flags == NBD_READ_ONLY) {
 			dev_err(disk_to_dev(nbd->disk), "Write on read-only\n");
-			req->errors = 1;
-			nbd_end_request(req);
+			nbd_end_request(req, -EIO);
 			continue;
 		}
 
 		/* Perform the 9p request.
  		 */
 		BUG_ON(blk_rq_bytes(req) > bufsize);
-		if (rq_data_dir(req) == WRITE)
-			memcpy_fromreq(buf, sp->req);
-		session_busy(sp, req);
-		if (plan9_request (nbd, fid, rq_data_dir(req),
-				   (u64)blk_rq_pos(req) << 9,
-				   blk_rq_bytes(req), buf) < 0) {
+		if (plan9_request (sp, fid, buf, req, &err) < 0)
 			goto fail;
-		}
-		if (session_idle(sp, &req) < 0)
-			goto fail;
-		if (rq_data_dir(req) == READ)
-			memcpy_toreq(req, buf);
-		req->errors = 0;
-		nbd_end_request(req);
+		nbd_end_request(req, err);
 		continue;
 fail:
 		session_fail(sp);
 	}
 	if (buf)
 		kfree(buf);
-	if (fid)
-		plan9_detach(nbd, fid); /* FIXME: could block kthread_stop() */
-
+	if (fid) {
+		dprintk(DBG_PLAN9, "%s: p9_client_clunk\n",
+			nbd->disk->disk_name);
+		p9_client_clunk(fid);
+	}
+	if (clnt) {
+		dprintk(DBG_PLAN9, "%s: p9_client_destroy\n",
+			nbd->disk->disk_name);
+		p9_client_destroy(clnt);
+	}
 	dprintk(DBG_RECOV, "%s: ses%d end\n", nbd->disk->disk_name, sp->num);
 	return 0;
 }
 
-static int session_create(struct nbd_device *nbd, struct session_struct **spp)
+static int session_create(struct p9_nbd_device *nbd, struct session_struct **spp)
 {
 	struct session_struct *sp;
 	int err;
@@ -470,7 +488,7 @@ static int session_create(struct nbd_device *nbd, struct session_struct **spp)
 
 static void session_destroy(struct session_struct *sp)
 {
-	struct nbd_device *nbd = sp->nbd;
+	struct p9_nbd_device *nbd = sp->nbd;
 
 	dprintk(DBG_RECOV, "%s: destroy ses%d\n",
 		nbd->disk->disk_name, sp->num);
@@ -479,21 +497,150 @@ static void session_destroy(struct session_struct *sp)
 	kfree(sp);
 }
 
-/* If session has been busy longer than xmit_timeout, return the
+/* Put session in the busy state, recording start time and in-flight request.
+ */
+static void session_busy_setreq(struct session_struct *sp, struct request *req)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+
+	spin_lock_irq(&nbd->queue_lock);
+	sp->req = req;
+	sp->start = jiffies;
+	sp->state = S_BUSY;
+	spin_unlock_irq(&nbd->queue_lock);
+	wake_up(&nbd->recov_wq);
+}
+/* Put session in the busy state, recording start time.
+ * Request is set to REQ_SPECIAL indicating a block request is not flight.
+ */
+static void session_busy(struct session_struct *sp)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+
+	spin_lock_irq(&nbd->queue_lock);
+	sp->req = REQ_SPECIAL;
+	sp->start = jiffies;
+	sp->state = S_BUSY;
+	spin_unlock_irq(&nbd->queue_lock);
+	wake_up(&nbd->recov_wq);
+}
+
+/* Put session in idle state.
+ * Return 0 on success, -1 if recov thread timed us out.
+ */
+static int session_idle(struct session_struct *sp)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+	int res = -1;
+
+	spin_lock_irq(&nbd->queue_lock);
+	if (sp->req) {
+		BUG_ON(sp->req != REQ_SPECIAL);
+		sp->req = NULL;
+		sp->state = S_IDLE;
+		res = 0;
+	}
+	spin_unlock_irq(&nbd->queue_lock);
+	if (res == 0)
+		wake_up(&nbd->recov_wq);
+	return res;
+}
+/* Put session in idle state.
+ * Return request (if not "stolen" by recov thread) in 'rp'.
+ * Return 0 on success, -1 if recov thread timed us out.
+ */
+static int session_idle_getreq(struct session_struct *sp, struct request **rp)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+	int res = -1;
+
+	spin_lock_irq(&nbd->queue_lock);
+	if (sp->req) {
+		BUG_ON(sp->req == REQ_SPECIAL);
+		*rp = sp->req;
+		sp->req = NULL;
+		sp->state = S_IDLE;
+		res = 0;
+	}
+	spin_unlock_irq(&nbd->queue_lock);
+	if (res == 0)
+		wake_up(&nbd->recov_wq);
+	return res;
+}
+/* Test for timeout without altering state, except to reset start time.
+ * This is for back-to-back handling of request chunks.
+ * Return 0 on success, -1 if recov thread timed us out.
+ */
+static int session_cont(struct session_struct *sp)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+	int res = -1;
+
+	spin_lock_irq(&nbd->queue_lock);
+	if (sp->req) {
+		sp->start = jiffies;
+		res = 0;
+	}
+	spin_unlock_irq(&nbd->queue_lock);
+	if (res == 0)
+		wake_up(&nbd->recov_wq);
+	return res;
+}
+
+/* Put session in idle state.
+ * Set nbd->filesize under the lock.
+ * Return 0 on success, -1 if recov thread timed us out.
+ */
+static int session_idle_setsize(struct session_struct *sp, u64 filesize)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+	int res = -1;
+
+	spin_lock_irq(&nbd->queue_lock);
+	if (sp->req) {
+		BUG_ON(sp->req != REQ_SPECIAL);
+		sp->req = NULL;
+		sp->state = S_IDLE;
+		if (nbd->bytesize == 0) {
+			nbd->bytesize = filesize;
+			nbd->bytesize &= ~((u64)nbd->blksize - 1);
+		}
+		res = 0;
+	}
+	spin_unlock_irq(&nbd->queue_lock);
+	if (res == 0)
+		wake_up(&nbd->recov_wq);
+	return res;
+}
+
+/* Put session in the fail state.
+ * From here, the session just waits to be cleaned up by recov thread.
+ */
+static void session_fail(struct session_struct *sp)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+
+	spin_lock_irq(&nbd->queue_lock);
+	sp->state = S_FAIL;
+	spin_unlock_irq(&nbd->queue_lock);
+	wake_up(&nbd->recov_wq);
+}
+
+/* If session has been busy longer than p9_timeout, return the
  * in-flight request to waiting_queue.  If the session gets unstuck,
  * it will find sp->req NULL and call session_fail().
  */
 static int session_istimedout(struct session_struct *sp)
 {
-	struct nbd_device *nbd = sp->nbd;
+	struct p9_nbd_device *nbd = sp->nbd;
 	int res = 0;
 
-	if (nbd->xmit_timeout == 0)
+	if (nbd->p9_timeout == 0)
 		return 0;
 
 	spin_lock_irq(&nbd->queue_lock);
-	if (sp->state == S_BUSY && jiffies - sp->start >= nbd->xmit_timeout) {
-		if (sp->req != NULL && sp->req != REQ_CONNECT)
+	if (sp->state == S_BUSY && jiffies - sp->start >= nbd->p9_timeout) {
+		if (sp->req != NULL && sp->req != REQ_SPECIAL)
 			list_add(&sp->req->queuelist, &nbd->waiting_queue);
 		sp->req = NULL;
 		res = 1;
@@ -508,12 +655,12 @@ static int session_istimedout(struct session_struct *sp)
  */
 static int session_isfailed(struct session_struct *sp)
 {
-	struct nbd_device *nbd = sp->nbd;
+	struct p9_nbd_device *nbd = sp->nbd;
 	int res = 0;
 
 	spin_lock_irq(&nbd->queue_lock);
 	if (sp->state == S_FAIL) {
-		if (sp->req != NULL && sp->req != REQ_CONNECT)
+		if (sp->req != NULL && sp->req != REQ_SPECIAL)
 			list_add(&sp->req->queuelist, &nbd->waiting_queue);
 		sp->req = NULL;
 		res = 1;
@@ -524,7 +671,7 @@ static int session_isfailed(struct session_struct *sp)
 
 static int recov_thread(void *data)
 {
-	struct nbd_device *nbd = data;
+	struct p9_nbd_device *nbd = data;
 	struct session_struct *sp, *n;
 	LIST_HEAD(sessions);
 	int count;
@@ -534,10 +681,10 @@ static int recov_thread(void *data)
 		list_add(&sp->list, &sessions);
 	while (!kthread_should_stop()) {
 		/* FIXME: wake up shouldn't be periodic */
-		if (nbd->xmit_timeout > 0)
+		if (nbd->p9_timeout > 0)
 			wait_event_interruptible_timeout(nbd->recov_wq,
 							 kthread_should_stop(),
-							 nbd->xmit_timeout);
+							 nbd->p9_timeout);
 		else
 			wait_event_interruptible(nbd->recov_wq,
 						 kthread_should_stop());
@@ -571,7 +718,7 @@ static void do_nbd_request(struct request_queue *q)
 	struct request *req;
 	
 	while ((req = blk_fetch_request(q)) != NULL) {
-		struct nbd_device *nbd;
+		struct p9_nbd_device *nbd;
 
 		spin_unlock_irq(q->queue_lock);
 
@@ -592,56 +739,36 @@ static void do_nbd_request(struct request_queue *q)
 	}
 }
 
-static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
+static int __nbd_ioctl(struct block_device *bdev, struct p9_nbd_device *nbd,
 		       unsigned int cmd, unsigned long arg)
 {
 	switch (cmd) {
 
-	case NBD_SET_SOCK:
-	case NBD_DO_IT:
-	case NBD_CLEAR_SOCK:
-	case NBD_CLEAR_QUE:
-	case NBD_DISCONNECT:
-	case NBD_PRINT_DEBUG:
-		return -EINVAL;
- 
 	case NBD_SET_BLKSIZE:
 		nbd->blksize = arg;
+
+		dprintk(DBG_IOCTL, "%s: setting blocksize to %d bytes\n",
+			nbd->disk->disk_name, nbd->blksize);
 		nbd->bytesize &= ~(nbd->blksize-1);
 		bdev->bd_inode->i_size = nbd->bytesize;
 		set_blocksize(bdev, nbd->blksize);
 		set_capacity(nbd->disk, nbd->bytesize >> 9);
 		return 0;
 
-	case NBD_SET_SIZE:
-		nbd->bytesize = arg & ~(nbd->blksize-1);
-		bdev->bd_inode->i_size = nbd->bytesize;
-		set_blocksize(bdev, nbd->blksize);
-		set_capacity(nbd->disk, nbd->bytesize >> 9);
-		return 0;
-
 	case NBD_SET_TIMEOUT:
-		nbd->xmit_timeout = arg * HZ;
+		nbd->p9_timeout = arg * HZ;
 		return 0;
-
-	case NBD_SET_SIZE_BLOCKS:
-		nbd->bytesize = ((u64) arg) * nbd->blksize;
-		bdev->bd_inode->i_size = nbd->bytesize;
-		set_blocksize(bdev, nbd->blksize);
-		set_capacity(nbd->disk, nbd->bytesize >> 9);
-		return 0;
-
 
 	case NBD_SET_SPEC: {
 		const char __user *ustr = (const char __user *)arg;
 		int err;
 
-		if (nbd->plan9_spec)
-			kfree(nbd->plan9_spec);          
-		nbd->plan9_spec = strndup_user(ustr, PAGE_SIZE);
-		if (IS_ERR(nbd->plan9_spec)) {
-			err = PTR_ERR(nbd->plan9_spec);
-			nbd->plan9_spec = NULL;
+		if (nbd->p9_spec)
+			kfree(nbd->p9_spec);          
+		nbd->p9_spec = strndup_user(ustr, PAGE_SIZE);
+		if (IS_ERR(nbd->p9_spec)) {
+			err = PTR_ERR(nbd->p9_spec);
+			nbd->p9_spec = NULL;
 			return err;
 		}
 		return 0;
@@ -651,19 +778,20 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 		const char __user *ustr = (const char __user *)arg;
 		int err;
 
-		if (nbd->plan9_opts)
-			kfree(nbd->plan9_opts);          
-		nbd->plan9_opts = strndup_user(ustr, PAGE_SIZE);
-		if (IS_ERR(nbd->plan9_opts)) {
-			err = PTR_ERR(nbd->plan9_opts);
-			nbd->plan9_opts = NULL;
+		if (nbd->p9_opts)
+			kfree(nbd->p9_opts);          
+		nbd->p9_opts = strndup_user(ustr, PAGE_SIZE);
+		if (IS_ERR(nbd->p9_opts)) {
+			err = PTR_ERR(nbd->p9_opts);
+			nbd->p9_opts = NULL;
 			return err;
 		}
 		return 0;
 	}
 
 	case NBD_START: {
-		int err;
+		int err = 0;
+		u64 filesize = (u64)(-1LL);
 
 		if (nbd->recov_kt)
 			return -EBUSY;
@@ -683,14 +811,32 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 			nbd->recov_kt = NULL;
 			return err;
 		}
+		/* Wait for session to connect and obtain device size
+ 		 * with a 9P getattr call.
+		 */
+		do {
+			err = wait_event_interruptible(nbd->recov_wq,
+						       nbd->bytesize != 0);
+			if (err < 0)
+				return err; /* -ERESTARTSYS */
+			spin_lock_irq(&nbd->queue_lock);
+			filesize = nbd->bytesize;
+			spin_unlock_irq(&nbd->queue_lock);
+		} while (filesize == (u64)(-1LL));
+
+		dprintk(DBG_IOCTL, "%s: setting device size to %llu bytes\n",
+			nbd->disk->disk_name, filesize);
+		bdev->bd_inode->i_size = nbd->bytesize;
+		set_blocksize(bdev, nbd->blksize);
+		set_capacity(nbd->disk, nbd->bytesize >> 9);
+		set_device_ro(bdev, 1);
 		return 0;
 	}
 
 	case NBD_STOP:
 		if (!nbd->recov_kt)
 			return -EINVAL;
-		if (nbd->recov_kt)
-			kthread_stop(nbd->recov_kt);
+		kthread_stop(nbd->recov_kt);
 		nbd->recov_kt = NULL;
 		nbd->bytesize = 0;
 		bdev->bd_inode->i_size = 0;
@@ -698,7 +844,6 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 		if (max_part > 0)
 			ioctl_by_bdev(bdev, BLKRRPART, 0);
 		return 0;
-
 	}
 
 	return -ENOTTY;
@@ -707,7 +852,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 static int nbd_ioctl(struct block_device *bdev, fmode_t mode,
 		     unsigned int cmd, unsigned long arg)
 {
-	struct nbd_device *nbd = bdev->bd_disk->private_data;
+	struct p9_nbd_device *nbd = bdev->bd_disk->private_data;
 	int error;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -742,7 +887,7 @@ static int __init nbd_init(void)
 	int part_shift;
 
 	if (max_part < 0) {
-		printk(KERN_ERR "nbd: max_part must be >= 0\n");
+		printk(KERN_ERR "9nbd: max_part must be >= 0\n");
 		return -EINVAL;
 	}
 
@@ -797,8 +942,8 @@ static int __init nbd_init(void)
 		goto out;
 	}
 
-	printk(KERN_INFO "nbd: registered device at major %d\n", NBD_MAJOR);
-	dprintk(DBG_INIT, "nbd: debugflags=0x%x\n", debugflags);
+	printk(KERN_INFO "9nbd: registered device at major %d\n", NBD_MAJOR);
+	dprintk(DBG_INIT, "9nbd: debugflags=0x%x\n", debugflags);
 
 	for (i = 0; i < nbds_max; i++) {
 		struct gendisk *disk = nbd_dev[i].disk;
@@ -807,18 +952,18 @@ static int __init nbd_init(void)
 		INIT_LIST_HEAD(&nbd_dev[i].waiting_queue);
 		spin_lock_init(&nbd_dev[i].queue_lock);
 		init_waitqueue_head(&nbd_dev[i].waiting_wq);
-		nbd_dev[i].xmit_timeout = 10 * HZ;
+		nbd_dev[i].p9_timeout = 10 * HZ;
 		nbd_dev[i].blksize = 4096;
 		nbd_dev[i].bytesize = 0;
-		nbd_dev[i].plan9_spec = NULL;
-		nbd_dev[i].plan9_opts = NULL;
+		nbd_dev[i].p9_spec = NULL;
+		nbd_dev[i].p9_opts = NULL;
 		nbd_dev[i].recov_kt = NULL;
 		init_waitqueue_head(&nbd_dev[i].recov_wq);
 		disk->major = NBD_MAJOR;
 		disk->first_minor = i << part_shift;
 		disk->fops = &nbd_fops;
 		disk->private_data = &nbd_dev[i];
-		sprintf(disk->disk_name, "nbd%d", i);
+		sprintf(disk->disk_name, "9nbd%d", i);
 		set_capacity(disk, 0);
 		add_disk(disk);
 	}
@@ -844,16 +989,16 @@ static void __exit nbd_cleanup(void)
 			blk_cleanup_queue(disk->queue);
 			put_disk(disk);
 		}
-		if (nbd_dev[i].plan9_spec)
-			kfree(nbd_dev[i].plan9_spec);
-		if (nbd_dev[i].plan9_opts)
-			kfree(nbd_dev[i].plan9_opts);
+		if (nbd_dev[i].p9_spec)
+			kfree(nbd_dev[i].p9_spec);
+		if (nbd_dev[i].p9_opts)
+			kfree(nbd_dev[i].p9_opts);
 		if (nbd_dev[i].recov_kt)
 			kthread_stop(nbd_dev[i].recov_kt);
 	}
 	unregister_blkdev(NBD_MAJOR, "nbd");
 	kfree(nbd_dev);
-	printk(KERN_INFO "nbd: unregistered device at major %d\n", NBD_MAJOR);
+	printk(KERN_INFO "9nbd: unregistered device at major %d\n", NBD_MAJOR);
 }
 
 module_init(nbd_init);

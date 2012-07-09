@@ -19,15 +19,7 @@
 
 #include <linux/types.h>
 
-#define NBD_SET_SOCK	_IO( 0xab, 0 )	/* deprecated */
 #define NBD_SET_BLKSIZE	_IO( 0xab, 1 )
-#define NBD_SET_SIZE	_IO( 0xab, 2 )
-#define NBD_DO_IT	_IO( 0xab, 3 )	/* deprecated */
-#define NBD_CLEAR_SOCK	_IO( 0xab, 4 )	/* deprecated */
-#define NBD_CLEAR_QUE	_IO( 0xab, 5 )	/* deprecated */
-#define NBD_PRINT_DEBUG	_IO( 0xab, 6 )	/* deprecated */
-#define NBD_SET_SIZE_BLOCKS	_IO( 0xab, 7 )
-#define NBD_DISCONNECT  _IO( 0xab, 8 )	/* deprecated */
 #define NBD_SET_TIMEOUT _IO( 0xab, 9 )
 
 #define NBD_SET_OPTS	_IOW( 0xab, 10, char* )
@@ -48,7 +40,7 @@
 
 struct request;
 
-struct nbd_device {
+struct p9_nbd_device {
 	int flags;
 	int magic;
 
@@ -62,12 +54,12 @@ struct nbd_device {
 	struct gendisk *disk;
 	int blksize;
 	u64 bytesize;
-	int xmit_timeout;
+	int p9_timeout;
 
 	int ses_count;
 
-	char *plan9_spec;
-	char *plan9_opts;
+	char *p9_spec;
+	char *p9_opts;
 };
 
 #endif
