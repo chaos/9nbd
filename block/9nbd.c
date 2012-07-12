@@ -1,15 +1,16 @@
 /*
- * Network block device - make block devices work over TCP
+ * 9P Network block device - make block devices work over 9P
  *
  * Note that you can not swap over this thing, yet. Seems to work but
  * deadlocks sometimes - you can not swap over TCP in general.
  * 
+ * 9P support added by Jim Garlick <garlick@llnl.gov>
  * Copyright 1997-2000, 2008 Pavel Machek <pavel@ucw.cz>
  * Parts copyright 2001 Steven Whitehouse <steve@chygwyn.com>
  *
  * This file is released under GPLv2 or later.
  *
- * (part of code stolen from loop.c)
+ * (part of code stolen from loop.c and nbd.c)
  */
 
 #include <linux/major.h>
@@ -32,6 +33,9 @@
 #include <net/sock.h>
 #include <linux/net.h>
 #include <linux/kthread.h>
+#include <linux/capability.h>
+#include <linux/key.h>
+#include <keys/user-type.h>
 
 #include <asm/uaccess.h>
 #include <asm/types.h>
@@ -60,6 +64,7 @@
 #define DBG_TX          0x0400
 #define DBG_PLAN9       0x0800
 #define DBG_RECOV       0x1000
+#define DBG_AUTH	0x2000
 static unsigned int debugflags;
 #endif /* NDEBUG */
 
@@ -110,8 +115,9 @@ static const char *ioctl_cmd_to_ascii(int cmd)
 {
 	switch (cmd) {
 	case NBD_SET_BLKSIZE: return "set-blksize";
-	case NBD_SET_SPEC: return "set-spec";
+	case NBD_SET_ADDR: return "set-addr";
 	case NBD_SET_OPTS: return "set-opts";
+	case NBD_SET_PATH: return "set-path";
 	case NBD_START: return "start";
 	case NBD_STOP: return "stop";
 	case BLKROSET: return "set-read-only";
@@ -139,15 +145,14 @@ static void nbd_end_request(struct request *req, int errnum)
 /* Get value of key from comma-delimited option list.
  * Caller must kfree value.
  */
-static int plan9_parseopt (char *opts, char *key, char **valp)
+static int plan9_parseopt_str (char *opts, char *key, char **valp)
 {
 	char *cpy, *options, *k, *v;
 	int err = 0;
 
 	if (!opts)
 		return -ESRCH;
-	cpy = kstrdup(opts, GFP_KERNEL);
-	if (!cpy)
+	if (!(cpy = kstrdup(opts, GFP_KERNEL)))
 		return -ENOMEM;
 	options = cpy;
 	while ((k = strsep(&options, ",")) != NULL) {
@@ -161,8 +166,7 @@ static int plan9_parseopt (char *opts, char *key, char **valp)
 		err = -ESRCH;
 		goto error;
 	}
-	*valp = kstrdup(v, GFP_KERNEL);
-	if (!*valp) {
+	if (!(*valp = kstrdup(v, GFP_KERNEL))) {
 		err = -ENOMEM;
 		goto error;
 	}
@@ -175,6 +179,19 @@ error:
 	return err;
 }
 
+static int plan9_parseopt_int(char *opts, char *key, int *vp)
+{
+	int err;
+	char *s;
+
+	err = plan9_parseopt_str(opts, key, &s);
+	if (err < 0)
+		return err;
+	*vp = (int)simple_strtol(s, NULL, 10);
+	kfree(s);
+	return 0;
+}
+
 static int plan9_create(struct session_struct *sp, struct p9_client **cp)
 {
 	struct p9_nbd_device *nbd = sp->nbd;
@@ -182,9 +199,9 @@ static int plan9_create(struct session_struct *sp, struct p9_client **cp)
 	int err;
 
 	dprintk(DBG_PLAN9, "%s: p9_client_create %s %s\n",
-		nbd->disk->disk_name, nbd->p9_spec, nbd->p9_opts);
+		nbd->disk->disk_name, nbd->p9_addr, nbd->p9_opts);
 	session_busy(sp);
-	clnt = p9_client_create(nbd->p9_spec, nbd->p9_opts);
+	clnt = p9_client_create(nbd->p9_addr, nbd->p9_opts);
 	if (IS_ERR(clnt))
 		return PTR_ERR(clnt);
 	if (clnt->msize - P9_IOHDRSZ < nbd->blksize) {
@@ -207,21 +224,163 @@ error:
 	return err;
 }
 
+static int _get_munge_cred(uid_t uid, gid_t gid, void **dp, int *lp)
+{
+	const struct cred *old_cred;
+	struct cred *override_cred;
+	struct key *key = NULL;
+	struct user_key_payload *ukp;
+	void *data, *cpy = NULL;
+	int len;
+	int err = 0;
+
+	override_cred = prepare_creds();
+	if (!override_cred)
+		return -ENOMEM;
+	override_cred->fsuid = uid;
+	override_cred->fsgid = gid;
+	old_cred = override_creds(override_cred);
+
+	key = request_key(&key_type_user, "munge", "");
+	if (IS_ERR(key)) {
+		err = PTR_ERR(key);
+		key = NULL;
+		dprintk(DBG_AUTH, "auth: request_key failed (%d)\n", err);
+		goto error;
+	}
+
+	down_read(&key->sem);
+	ukp = key->payload.data;
+	if (IS_ERR_OR_NULL(ukp)) {
+		err = ukp ? PTR_ERR(ukp) : -EINVAL;
+		dprintk(DBG_AUTH, "auth: payload error (%d)\n", err);
+		goto error_unlock;
+	}
+	data = ukp->data;
+	len = ukp->datalen;
+	if (len == 0) {
+		dprintk(DBG_AUTH, "auth: payload empty\n");
+		err = -EINVAL;
+		goto error_unlock;
+	}
+	cpy = kmalloc (len, GFP_KERNEL);
+	if (!cpy) {
+		dprintk(DBG_AUTH, "auth: out of memory\n");
+		err = -ENOMEM;
+		goto error_unlock;
+	}
+	memcpy(cpy, data, len);
+	up_read(&key->sem);
+	key_revoke(key); /* munge creds are one time use */
+	key_put(key);
+	*dp = cpy;
+	*lp = len;
+	return 0;
+
+error_unlock:
+	up_read(&key->sem);
+error:
+	if (cpy)
+		kfree(cpy);
+	if (key) {
+		key_revoke(key); /* munge creds are one time use */
+		key_put(key);
+	}
+	revert_creds(old_cred);
+	put_cred(override_cred);
+	return err;	
+}
+
+static int plan9_auth_munge(struct session_struct *sp, uid_t uid,
+			    struct p9_fid *afid)
+{
+	void *mungecred = NULL;
+	int mungecredlen = 0;
+	int err;
+	gid_t gid = uid; /* punt - gid isn't used for anything in this case */
+	int n, count = 0;
+
+	dprintk(DBG_AUTH, "auth: obtaining munge cred (%d:%d)\n", uid, gid);
+	err = _get_munge_cred (uid, gid, &mungecred, &mungecredlen);
+	if (err < 0)
+		goto error;
+	dprintk(DBG_AUTH, "auth: writing munge cred (%d bytes)\n",
+		mungecredlen);
+	do {
+		session_busy(sp);
+		n = p9_client_write(afid, mungecred + count, NULL, 0,
+				      mungecredlen - count);
+		if (n < 0) {
+			err = n;
+			goto error;
+		}
+		if (session_idle(sp) < 0) {
+			err = -ETIMEDOUT;
+			goto error;
+		}
+		count += n;
+	} while (count < mungecredlen);
+	dprintk(DBG_AUTH, "auth: munge cred transmitted\n");
+	kfree(mungecred);
+	return 0;
+error:
+	if (mungecred)
+		kfree(mungecred);
+	return -1;
+}	
+
+static int plan9_auth(struct session_struct *sp, struct p9_client *clnt,
+		      uid_t uid, char *aname, struct p9_fid **fp)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+	struct p9_fid *afid = NULL;
+	int err;
+
+	dprintk(DBG_PLAN9, "%s: p9_client_auth %s\n", nbd->disk->disk_name,
+		aname);
+	session_busy(sp);
+	afid = p9_client_auth(clnt, NULL, uid, aname);
+	if (IS_ERR(afid)) {
+		err = PTR_ERR(afid);
+		afid = NULL;
+		if (err != -ENOENT) {
+			dprintk(DBG_AUTH, "auth: request failed (%d)\n", err);
+			goto error;
+		}
+		dprintk(DBG_AUTH, "auth: server doesn't require auth\n");
+	}
+	if (session_idle(sp) < 0) {
+		err = -ETIMEDOUT;
+		goto error;
+	}
+	if (afid) {
+		err = plan9_auth_munge(sp, uid, afid);
+		if (err < 0) {
+			dprintk(DBG_AUTH, "auth: munge hanshake failed (%d)\n",
+				err);
+			goto error;
+		}
+	}
+	*fp = afid;
+	return 0;
+error:
+	if (afid)
+		p9_client_clunk(afid);
+	return err;
+}
+
 static int plan9_attach(struct session_struct *sp, struct p9_client *clnt,
+			struct p9_fid *afid, uid_t uid, char *aname,
 			struct p9_fid **fp)
 {
 	struct p9_nbd_device *nbd = sp->nbd;
-	char *aname = NULL;
 	struct p9_fid *fid = NULL;
 	int err;
 	
-	err = plan9_parseopt(nbd->p9_opts, "aname", &aname);
-	if (err < 0)
-		goto error;
 	dprintk(DBG_PLAN9, "%s: p9_client_attach %s\n", nbd->disk->disk_name,
 		aname);
 	session_busy(sp);
-	fid = p9_client_attach(clnt, NULL, NULL, 0, aname);
+	fid = p9_client_attach(clnt, afid, NULL, uid, aname);
 	if (IS_ERR(fid)) {
 		err = PTR_ERR(fid);
 		fid = NULL;
@@ -231,14 +390,11 @@ static int plan9_attach(struct session_struct *sp, struct p9_client *clnt,
 		err = -ETIMEDOUT;
 		goto error;
 	}
-	kfree(aname);
 	*fp = fid;
 	return 0;
 error:
 	if (fid)
 		p9_client_clunk(fid);
-	if (aname)
-		kfree(aname);
 	return err;
 }
 
@@ -314,7 +470,7 @@ static void memcpy_toreq(struct request *req, void *buf)
 	}
 }
 
-static int _p9_ioreq (struct p9_fid *fid, int dir, void *buf, u64 off, int len)
+static int _p9_ioreq(struct p9_fid *fid, int dir, void *buf, u64 off, int len)
 {
 	int n;
 
@@ -373,24 +529,126 @@ error:
 	}
 }
 
+static void _freewnames(int nwname, char **wnames)
+{
+	while (nwname > 0)
+		kfree(wnames[--nwname]);
+	kfree(wnames);
+}
+
+static int _path2wnames(char *path, int *np, char ***wp)
+{
+	char *cpy = NULL, *p, *el;
+	char **wnames = NULL;
+	int nwname = 0;
+	int err;
+
+	if (!(cpy = kstrdup(path, GFP_KERNEL))) {
+		err = -ENOMEM;
+		goto error;
+	}
+	if (!(wnames = kmalloc(P9_MAXWELEM * sizeof(char *), GFP_KERNEL))) {
+		err = -ENOMEM;
+		goto error;
+	}
+	p = cpy;
+	while ((el = strsep(&p, "/")) != NULL) {
+		if (strlen(el) == 0)
+			continue;
+		if (nwname == P9_MAXWELEM) {
+			err = -ERANGE;
+			goto error;
+		}
+		if (!(wnames[nwname] = kstrdup(el, GFP_KERNEL))) {
+			err = -ENOMEM;
+			goto error;
+		}
+		nwname++;
+	}
+	kfree(cpy);
+	*np = nwname;
+	*wp = wnames;
+	return 0;
+error:
+	if (wnames)
+		_freewnames(nwname, wnames);
+	if (cpy)
+		kfree(cpy);
+	return err;
+}
+
+static int plan9_walk(struct session_struct *sp, struct p9_fid *fid)
+{
+	struct p9_nbd_device *nbd = sp->nbd;
+	struct p9_fid *res;
+	int err;
+	int nwname;
+	char **wnames = NULL;
+
+	if (!nbd->p9_path)
+		return 0;
+	err = _path2wnames(nbd->p9_path, &nwname, &wnames);
+	if (err < 0)
+		goto error;
+	session_busy(sp);
+	res = p9_client_walk(fid, nwname, wnames, 0);
+	if (session_idle(sp) < 0) {
+		err = -ETIMEDOUT;
+		goto error;
+	}
+	if (IS_ERR(res)) {
+		err = PTR_ERR(res);
+		goto error;
+	}
+	_freewnames(nwname, wnames);
+	return 0;
+error:
+	if (wnames)
+		_freewnames(nwname, wnames);
+	return err;
+}
+
 static int session_thread(void *data)
 {
 	struct session_struct *sp = data;
 	struct p9_nbd_device *nbd = sp->nbd;
 	struct p9_client *clnt = NULL;
 	struct p9_fid *fid = NULL;
+	struct p9_fid *afid = NULL;
 	void *buf = NULL;
 	u32 bufsize = (u32)BLK_SAFE_MAX_SECTORS << 9;
 	struct request *req;
 	int err;
+	uid_t uid = 0;
+	char *aname = NULL;
+	int auth = 0;
+	char *authtype = NULL;
 
 	set_user_nice(current, -20);
+
+	if (sp->num > 0)
+		printk(KERN_ERR "%s: 9P server not responding, still trying\n",
+			nbd->disk->disk_name);
+
+	err = plan9_parseopt_str(nbd->p9_opts, "aname", &aname);
+	if (err < 0)
+		goto fail;
+	(void)plan9_parseopt_int(nbd->p9_opts, "uid", &uid);
+	if (plan9_parseopt_str(nbd->p9_opts, "auth", &authtype) == 0) {
+		if (!strcmp(authtype, "munge"))
+			auth = 1;
+		kfree(authtype);
+	}
 
 	dprintk(DBG_RECOV, "%s: ses%d start\n", nbd->disk->disk_name, sp->num);
 
 	if (plan9_create(sp, &clnt) < 0)
 		goto fail;
-	if (plan9_attach(sp, clnt, &fid) < 0)
+	if (auth && plan9_auth(sp, clnt, uid, aname, &afid) < 0)
+		goto fail;
+	if (plan9_attach(sp, clnt, afid, uid, aname, &fid) < 0)
+		goto fail;
+	if (plan9_walk(sp, fid) < 0)
 		goto fail;
 	if (plan9_getsize(sp, fid) < 0)
 		goto fail;
@@ -402,6 +660,9 @@ static int session_thread(void *data)
 		dev_err(disk_to_dev(nbd->disk), "out of memory\n");
 		goto fail;
 	}
+
+	if (sp->num > 0)
+		printk(KERN_ERR "%s: 9P server ok\n", nbd->disk->disk_name);
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(nbd->waiting_wq, kthread_should_stop()
@@ -443,10 +704,13 @@ static int session_thread(void *data)
 fail:
 		session_fail(sp);
 	}
-	if (buf)
-		kfree(buf);
+	if (afid) {
+		dprintk(DBG_PLAN9, "%s: p9_client_clunk afid\n",
+			nbd->disk->disk_name);
+		p9_client_clunk(afid);
+	}
 	if (fid) {
-		dprintk(DBG_PLAN9, "%s: p9_client_clunk\n",
+		dprintk(DBG_PLAN9, "%s: p9_client_clunk fid\n",
 			nbd->disk->disk_name);
 		p9_client_clunk(fid);
 	}
@@ -455,6 +719,10 @@ fail:
 			nbd->disk->disk_name);
 		p9_client_destroy(clnt);
 	}
+	if (buf)
+		kfree(buf);
+	if (aname)
+		kfree(aname);
 	dprintk(DBG_RECOV, "%s: ses%d end\n", nbd->disk->disk_name, sp->num);
 	return 0;
 }
@@ -493,7 +761,10 @@ static void session_destroy(struct session_struct *sp)
 	dprintk(DBG_RECOV, "%s: destroy ses%d\n",
 		nbd->disk->disk_name, sp->num);
 	kthread_stop(sp->kt);
-	BUG_ON(sp->req != NULL);
+	spin_lock_irq(&nbd->queue_lock);
+	if (sp->req != NULL && sp->req != REQ_SPECIAL)
+		list_add(&sp->req->queuelist, &nbd->waiting_queue);
+	spin_unlock_irq(&nbd->queue_lock);
 	kfree(sp);
 }
 
@@ -739,6 +1010,34 @@ static void do_nbd_request(struct request_queue *q)
 	}
 }
 
+static void clear_waiting_queue(struct p9_nbd_device *nbd)
+{
+	struct request *req, *n;
+
+	spin_lock_irq(&nbd->queue_lock);
+	list_for_each_entry_safe(req, n, &nbd->waiting_queue, queuelist) {
+		list_del_init(&req->queuelist);
+		nbd_end_request(req, -EIO);
+	}
+	spin_unlock_irq(&nbd->queue_lock);
+}
+
+static int _ioctl_strdup(unsigned long arg, char **sp)
+{
+	const char __user *ustr = (const char __user *)arg;
+	char *s = NULL;
+
+	if (ustr) {
+		s = strndup_user(ustr, PAGE_SIZE);
+		if (IS_ERR(s))
+			return PTR_ERR(s);
+	}
+	if (*sp)
+		kfree(*sp);
+	*sp = s;
+	return 0;
+}
+
 static int __nbd_ioctl(struct block_device *bdev, struct p9_nbd_device *nbd,
 		       unsigned int cmd, unsigned long arg)
 {
@@ -759,35 +1058,14 @@ static int __nbd_ioctl(struct block_device *bdev, struct p9_nbd_device *nbd,
 		nbd->p9_timeout = arg * HZ;
 		return 0;
 
-	case NBD_SET_SPEC: {
-		const char __user *ustr = (const char __user *)arg;
-		int err;
+	case NBD_SET_ADDR:
+		return _ioctl_strdup(arg, &nbd->p9_addr);
 
-		if (nbd->p9_spec)
-			kfree(nbd->p9_spec);          
-		nbd->p9_spec = strndup_user(ustr, PAGE_SIZE);
-		if (IS_ERR(nbd->p9_spec)) {
-			err = PTR_ERR(nbd->p9_spec);
-			nbd->p9_spec = NULL;
-			return err;
-		}
-		return 0;
-	}
+	case NBD_SET_OPTS:
+		return _ioctl_strdup(arg, &nbd->p9_opts);
 
-	case NBD_SET_OPTS: {
-		const char __user *ustr = (const char __user *)arg;
-		int err;
-
-		if (nbd->p9_opts)
-			kfree(nbd->p9_opts);          
-		nbd->p9_opts = strndup_user(ustr, PAGE_SIZE);
-		if (IS_ERR(nbd->p9_opts)) {
-			err = PTR_ERR(nbd->p9_opts);
-			nbd->p9_opts = NULL;
-			return err;
-		}
-		return 0;
-	}
+	case NBD_SET_PATH:
+		return _ioctl_strdup(arg, &nbd->p9_path);
 
 	case NBD_START: {
 		int err = 0;
@@ -817,8 +1095,11 @@ static int __nbd_ioctl(struct block_device *bdev, struct p9_nbd_device *nbd,
 		do {
 			err = wait_event_interruptible(nbd->recov_wq,
 						       nbd->bytesize != 0);
-			if (err < 0)
-				return err; /* -ERESTARTSYS */
+			if (err < 0) {
+				kthread_stop(nbd->recov_kt);
+				nbd->recov_kt = NULL;
+				return err;
+			}
 			spin_lock_irq(&nbd->queue_lock);
 			filesize = nbd->bytesize;
 			spin_unlock_irq(&nbd->queue_lock);
@@ -841,6 +1122,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct p9_nbd_device *nbd,
 		nbd->bytesize = 0;
 		bdev->bd_inode->i_size = 0;
 		set_capacity(nbd->disk, 0);
+		clear_waiting_queue(nbd);
 		if (max_part > 0)
 			ioctl_by_bdev(bdev, BLKRRPART, 0);
 		return 0;
@@ -955,15 +1237,16 @@ static int __init nbd_init(void)
 		nbd_dev[i].p9_timeout = 10 * HZ;
 		nbd_dev[i].blksize = 4096;
 		nbd_dev[i].bytesize = 0;
-		nbd_dev[i].p9_spec = NULL;
+		nbd_dev[i].p9_addr = NULL;
 		nbd_dev[i].p9_opts = NULL;
+		nbd_dev[i].p9_path = NULL;
 		nbd_dev[i].recov_kt = NULL;
 		init_waitqueue_head(&nbd_dev[i].recov_wq);
 		disk->major = NBD_MAJOR;
 		disk->first_minor = i << part_shift;
 		disk->fops = &nbd_fops;
 		disk->private_data = &nbd_dev[i];
-		sprintf(disk->disk_name, "9nbd%d", i);
+		sprintf(disk->disk_name, "nbd%d", i);
 		set_capacity(disk, 0);
 		add_disk(disk);
 	}
@@ -989,12 +1272,14 @@ static void __exit nbd_cleanup(void)
 			blk_cleanup_queue(disk->queue);
 			put_disk(disk);
 		}
-		if (nbd_dev[i].p9_spec)
-			kfree(nbd_dev[i].p9_spec);
-		if (nbd_dev[i].p9_opts)
-			kfree(nbd_dev[i].p9_opts);
 		if (nbd_dev[i].recov_kt)
 			kthread_stop(nbd_dev[i].recov_kt);
+		if (nbd_dev[i].p9_addr)
+			kfree(nbd_dev[i].p9_addr);
+		if (nbd_dev[i].p9_opts)
+			kfree(nbd_dev[i].p9_opts);
+		if (nbd_dev[i].p9_path)
+			kfree(nbd_dev[i].p9_path);
 	}
 	unregister_blkdev(NBD_MAJOR, "nbd");
 	kfree(nbd_dev);

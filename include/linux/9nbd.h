@@ -20,13 +20,14 @@
 #include <linux/types.h>
 
 #define NBD_SET_BLKSIZE	_IO( 0xab, 1 )
-#define NBD_SET_TIMEOUT _IO( 0xab, 9 )
+#define NBD_SET_TIMEOUT _IO( 0xab, 2 )
+#define NBD_START	_IO( 0xab, 3 )
+#define NBD_STOP 	_IO( 0xab, 4 )
 
 #define NBD_SET_OPTS	_IOW( 0xab, 10, char* )
-#define NBD_SET_SPEC	_IOW( 0xab, 11, char* )
+#define NBD_SET_ADDR	_IOW( 0xab, 11, char* )
+#define NBD_SET_PATH	_IOW( 0xab, 12, char* )
 
-#define NBD_START	_IO( 0xab, 12 )
-#define NBD_STOP 	_IO( 0xab, 13 )
 
 /* userspace doesn't need the nbd_device structure */
 #ifdef __KERNEL__
@@ -54,12 +55,13 @@ struct p9_nbd_device {
 	struct gendisk *disk;
 	int blksize;
 	u64 bytesize;
-	int p9_timeout;
 
 	int ses_count;
 
-	char *p9_spec;
+	char *p9_addr;
 	char *p9_opts;
+	char *p9_path;
+	int p9_timeout;
 };
 
 #endif
