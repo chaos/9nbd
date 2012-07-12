@@ -1,3 +1,7 @@
+In v9fs-2.6.38.5-18:
+* [net/9p] restore p9_client_auth()
+* [block/9nbd] add 9P network block device
+
 In v9fs-2.6.38.5-17:
 * disable async readpage by default
   and add asyncreadpage mount option (issue 108)
