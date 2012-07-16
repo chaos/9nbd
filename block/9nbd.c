@@ -82,6 +82,7 @@ struct session_struct {
 	struct request *req;	/* request being processed by session */
 	int num;
 	struct list_head list;
+	const char *reason;
 };
 
 #define REQ_SPECIAL		ERR_PTR(-42)
@@ -115,6 +116,7 @@ static const char *ioctl_cmd_to_ascii(int cmd)
 {
 	switch (cmd) {
 	case NBD_SET_BLKSIZE: return "set-blksize";
+	case NBD_SET_TIMEOUT: return "set-timeout";
 	case NBD_SET_ADDR: return "set-addr";
 	case NBD_SET_OPTS: return "set-opts";
 	case NBD_SET_PATH: return "set-path";
@@ -622,9 +624,9 @@ static int session_thread(void *data)
 
 	set_user_nice(current, -20);
 
-	if (sp->num > 0)
-		printk(KERN_ERR "%s: 9P server not responding, still trying\n",
-			nbd->disk->disk_name);
+	if (sp->reason)
+		printk(KERN_ERR "%s: 9P session restart due to %s\n",
+			nbd->disk->disk_name, sp->reason);
 
 	err = plan9_parseopt_str(nbd->p9_opts, "aname", &aname);
 	if (err < 0)
@@ -657,7 +659,7 @@ static int session_thread(void *data)
 		goto fail;
 	}
 
-	if (sp->num > 0)
+	if (sp->reason)
 		printk(KERN_ERR "%s: 9P server ok\n", nbd->disk->disk_name);
 
 	while (!kthread_should_stop()) {
@@ -723,7 +725,8 @@ fail:
 	return 0;
 }
 
-static int session_create(struct p9_nbd_device *nbd, struct session_struct **spp)
+static int session_create(struct p9_nbd_device *nbd,
+			  struct session_struct **spp, const char *reason)
 {
 	struct session_struct *sp;
 	int err;
@@ -738,6 +741,7 @@ static int session_create(struct p9_nbd_device *nbd, struct session_struct **spp
 	sp->start = 0;
 	sp->nbd = nbd;
 	sp->num = nbd->ses_count;
+	sp->reason = reason;
 	sp->kt = kthread_run(session_thread, sp,
 			     "%s/ses%d", nbd->disk->disk_name, sp->num);
 	if (IS_ERR(sp->kt)) {
@@ -942,9 +946,10 @@ static int recov_thread(void *data)
 	struct session_struct *sp, *n;
 	LIST_HEAD(sessions);
 	int count;
+	char *reason = NULL;
 
 	dprintk(DBG_RECOV, "%s: recov start\n", nbd->disk->disk_name);
-	if (session_create(nbd, &sp) == 0)
+	if (session_create(nbd, &sp, reason) == 0)
 		list_add(&sp->list, &sessions);
 	while (!kthread_should_stop()) {
 		/* FIXME: wake up shouldn't be periodic */
@@ -963,11 +968,15 @@ static int recov_thread(void *data)
 			if (session_isfailed(sp)) {
 				list_del_init(&sp->list);
 				session_destroy(sp);
-			} else if (!session_istimedout(sp))
+				reason = "protocol failure";
+			} else if (session_istimedout(sp)) {
+				reason = "server not responding";
+			} else {
 				count++;
+			}
 		}
 		/* create new session if needed */
-		if (count == 0 && session_create(nbd, &sp) == 0)
+		if (count == 0 && session_create(nbd, &sp, reason) == 0)
 			list_add(&sp->list, &sessions);
 	}
 	dprintk(DBG_RECOV, "%s: recov end", nbd->disk->disk_name);
