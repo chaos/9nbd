@@ -294,22 +294,18 @@ error:
 static int plan9_auth_munge(struct session_struct *sp, uid_t uid,
 			    struct p9_fid *afid)
 {
-	void *mungecred = NULL;
-	int mungecredlen = 0;
-	int err;
-	gid_t gid = uid; /* punt - gid isn't used for anything in this case */
-	int n, count = 0;
+	void *data = NULL;
+	int err, n, len = 0, offset = 0;
 
-	dprintk(DBG_AUTH, "auth: obtaining munge cred (%d:%d)\n", uid, gid);
-	err = _get_munge_cred (uid, gid, &mungecred, &mungecredlen);
+	dprintk(DBG_AUTH, "auth: obtaining munge cred (%d:%d)\n", uid, uid);
+	err = _get_munge_cred (uid, (gid_t)uid, &data, &len);
 	if (err < 0)
 		goto error;
-	dprintk(DBG_AUTH, "auth: writing munge cred (%d bytes)\n",
-		mungecredlen);
+	dprintk(DBG_AUTH, "auth: writing munge cred (%d bytes)\n", len);
 	do {
 		session_busy(sp);
-		n = p9_client_write(afid, mungecred + count, NULL, 0,
-				      mungecredlen - count);
+		n = p9_client_write(afid, data + offset, NULL, offset,
+				    len - offset);
 		if (n < 0) {
 			err = n;
 			goto error;
@@ -318,14 +314,14 @@ static int plan9_auth_munge(struct session_struct *sp, uid_t uid,
 			err = -ETIMEDOUT;
 			goto error;
 		}
-		count += n;
-	} while (count < mungecredlen);
+		offset += n;
+	} while (offset < len);
 	dprintk(DBG_AUTH, "auth: munge cred transmitted\n");
-	kfree(mungecred);
+	kfree(data);
 	return 0;
 error:
-	if (mungecred)
-		kfree(mungecred);
+	if (data)
+		kfree(data);
 	return -1;
 }	
 
