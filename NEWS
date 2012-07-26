@@ -1,3 +1,6 @@
+In v9fs-2.6.38.5-19:
+* [block/9nbd] fix bug that caused munge auth to fail sometimes
+
 In v9fs-2.6.38.5-18:
 * [net/9p] restore p9_client_auth()
 * [block/9nbd] add 9P network block device

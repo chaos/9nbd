@@ -625,8 +625,8 @@ static int session_thread(void *data)
 	set_user_nice(current, -20);
 
 	if (sp->reason)
-		printk(KERN_ERR "%s: 9P session restart due to %s\n",
-			nbd->disk->disk_name, sp->reason);
+		printk(KERN_ERR "%s/ses%d: 9P session restart due to %s\n",
+			nbd->disk->disk_name, sp->num, sp->reason);
 
 	err = plan9_parseopt_str(nbd->p9_opts, "aname", &aname);
 	if (err < 0)
@@ -638,7 +638,7 @@ static int session_thread(void *data)
 		kfree(authtype);
 	}
 
-	dprintk(DBG_RECOV, "%s: ses%d start\n", nbd->disk->disk_name, sp->num);
+	dprintk(DBG_RECOV, "%s/ses%d: start\n", nbd->disk->disk_name, sp->num);
 
 	if (plan9_create(sp, &clnt) < 0)
 		goto fail;
@@ -660,7 +660,8 @@ static int session_thread(void *data)
 	}
 
 	if (sp->reason)
-		printk(KERN_ERR "%s: 9P server ok\n", nbd->disk->disk_name);
+		printk(KERN_ERR "%s/ses%d: 9P server ok\n",
+			nbd->disk->disk_name, sp->num);
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(nbd->waiting_wq, kthread_should_stop()
@@ -721,7 +722,7 @@ fail:
 		kfree(buf);
 	if (aname)
 		kfree(aname);
-	dprintk(DBG_RECOV, "%s: ses%d end\n", nbd->disk->disk_name, sp->num);
+	dprintk(DBG_RECOV, "%s/ses%d: end\n", nbd->disk->disk_name, sp->num);
 	return 0;
 }
 
