@@ -73,8 +73,39 @@ static int v9fs_xattr_user_set(struct dentry *dentry, const char *name,
 	return retval;
 }
 
+#if RHEL6_COMPAT
+static int v9fs_xattr_user_get_inode(struct inode *inode, const char *name,
+			             void *buffer, size_t size)
+{
+	struct dentry *dentry = d_obtain_alias (inode);
+
+	if (dentry == NULL) {
+		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
+		return -ESRCH;
+	}
+	return v9fs_xattr_user_get(dentry, name, buffer, size, 0);
+}
+
+static int v9fs_xattr_user_set_inode(struct inode *inode, const char *name,
+			const void *value, size_t size, int flags)
+{
+	struct dentry *dentry = d_obtain_alias (inode);
+
+	if (dentry == NULL) {
+		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
+		return -ESRCH;
+	}
+	return v9fs_xattr_user_set (dentry, name, value, size, flags, 0);
+}
+#endif
+
 struct xattr_handler v9fs_xattr_user_handler = {
 	.prefix	= XATTR_USER_PREFIX,
+#if RHEL6_COMPAT
+	.get	= v9fs_xattr_user_get_inode,
+	.set	= v9fs_xattr_user_set_inode,
+#else
 	.get	= v9fs_xattr_user_get,
 	.set	= v9fs_xattr_user_set,
+#endif
 };
