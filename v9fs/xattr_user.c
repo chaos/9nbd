@@ -77,8 +77,12 @@ static int v9fs_xattr_user_set(struct dentry *dentry, const char *name,
 static int v9fs_xattr_user_get_inode(struct inode *inode, const char *name,
 			             void *buffer, size_t size)
 {
-	struct dentry *dentry = d_obtain_alias (inode);
+	struct dentry *dentry;
 
+	/* dentry = d_obtain_alias (inode); */
+        spin_lock(&inode->i_lock);
+        dentry = list_entry(inode->i_dentry.next, struct dentry, d_alias);
+        spin_unlock(&inode->i_lock);
 	if (dentry == NULL) {
 		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
 		return -ESRCH;
@@ -89,8 +93,12 @@ static int v9fs_xattr_user_get_inode(struct inode *inode, const char *name,
 static int v9fs_xattr_user_set_inode(struct inode *inode, const char *name,
 			const void *value, size_t size, int flags)
 {
-	struct dentry *dentry = d_obtain_alias (inode);
+	struct dentry *dentry;
 
+	/* dentry = d_obtain_alias (inode); */
+        spin_lock(&inode->i_lock);
+        dentry = list_entry(inode->i_dentry.next, struct dentry, d_alias);
+        spin_unlock(&inode->i_lock);
 	if (dentry == NULL) {
 		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
 		return -ESRCH;

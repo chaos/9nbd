@@ -91,14 +91,19 @@ static struct posix_acl *v9fs_get_cached_acl(struct inode *inode, int type)
 	return acl;
 }
 
+#if RHEL6_COMPAT
+int v9fs_check_acl(struct inode *inode, int mask)
+#else
 int v9fs_check_acl(struct inode *inode, int mask, unsigned int flags)
+#endif
 {
 	struct posix_acl *acl;
 	struct v9fs_session_info *v9ses;
 
+#if ! RHEL6_COMPAT
 	if (flags & IPERM_FLAG_RCU)
 		return -ECHILD;
-
+#endif
 	v9ses = v9fs_inode2v9ses(inode);
 	if ((v9ses->flags & V9FS_ACCESS_MASK) != V9FS_ACCESS_CLIENT) {
 		/*
@@ -380,16 +385,102 @@ err_out:
 	return retval;
 }
 
+#if RHEL6_COMPAT
+static int v9fs_xattr_set_acl_access_inode(struct inode *inode,
+					   const char *name,
+					   const void *value, size_t size,
+					   int flags)
+{
+	struct dentry *dentry;
+
+	spin_lock(&inode->i_lock);
+	dentry = list_entry(inode->i_dentry.next, struct dentry, d_alias);
+	spin_unlock(&inode->i_lock);
+	if (dentry == NULL) {
+		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
+		return -ESRCH;
+	}
+	return v9fs_xattr_set_acl(dentry, name, value, size, flags,
+				  ACL_TYPE_ACCESS);
+}
+
+static int v9fs_xattr_get_acl_access_inode(struct inode *inode,
+					   const char *name,
+					   void *buffer, size_t size)
+{
+	struct dentry *dentry;
+
+	spin_lock(&inode->i_lock);
+	dentry = list_entry(inode->i_dentry.next, struct dentry, d_alias);
+	spin_unlock(&inode->i_lock);
+	if (dentry == NULL) {
+		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
+		return -ESRCH;
+	}
+	return v9fs_xattr_get_acl(dentry, name, buffer, size, ACL_TYPE_ACCESS);
+}
+
+static int v9fs_xattr_set_acl_default_inode(struct inode *inode,
+					    const char *name,
+					    const void *value, size_t size,
+					    int flags)
+{
+	struct dentry *dentry;
+
+	spin_lock(&inode->i_lock);
+	dentry = list_entry(inode->i_dentry.next, struct dentry, d_alias);
+	spin_unlock(&inode->i_lock);
+	if (dentry == NULL) {
+		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
+		return -ESRCH;
+	}
+	return v9fs_xattr_set_acl(dentry, name, value, size, flags,
+				  ACL_TYPE_DEFAULT);
+}
+
+static int v9fs_xattr_get_acl_default_inode(struct inode *inode,
+					    const char *name,
+					    void *buffer, size_t size)
+{
+	struct dentry *dentry;
+
+	spin_lock(&inode->i_lock);
+	dentry = list_entry(inode->i_dentry.next, struct dentry, d_alias);
+	spin_unlock(&inode->i_lock);
+	if (dentry == NULL) {
+		printk (KERN_ERR "%s: dentry was not found\n", __FUNCTION__);
+		return -ESRCH;
+	}
+	return v9fs_xattr_get_acl(dentry, name, buffer, size, ACL_TYPE_DEFAULT);
+}
+#endif
+
+#if RHEL6_COMPAT
+struct xattr_handler v9fs_xattr_acl_access_handler = {
+	.prefix	= POSIX_ACL_XATTR_ACCESS,
+	.get	= v9fs_xattr_get_acl_access_inode,
+	.set	= v9fs_xattr_set_acl_access_inode,
+};
+#else
 const struct xattr_handler v9fs_xattr_acl_access_handler = {
 	.prefix	= POSIX_ACL_XATTR_ACCESS,
 	.flags	= ACL_TYPE_ACCESS,
 	.get	= v9fs_xattr_get_acl,
 	.set	= v9fs_xattr_set_acl,
 };
+#endif
 
+#if RHEL6_COMPAT
+struct xattr_handler v9fs_xattr_acl_default_handler = {
+	.prefix	= POSIX_ACL_XATTR_DEFAULT,
+	.get	= v9fs_xattr_get_acl_default_inode,
+	.set	= v9fs_xattr_set_acl_default_inode,
+};
+#else
 const struct xattr_handler v9fs_xattr_acl_default_handler = {
 	.prefix	= POSIX_ACL_XATTR_DEFAULT,
 	.flags	= ACL_TYPE_DEFAULT,
 	.get	= v9fs_xattr_get_acl,
 	.set	= v9fs_xattr_set_acl,
 };
+#endif

@@ -20,12 +20,14 @@
 
 #if RHEL6_COMPAT
 extern struct xattr_handler *v9fs_xattr_handlers[];
+extern struct xattr_handler v9fs_xattr_acl_access_handler;
+extern struct xattr_handler v9fs_xattr_acl_default_handler;
 #else
 extern const struct xattr_handler *v9fs_xattr_handlers[];
-#endif
-extern struct xattr_handler v9fs_xattr_user_handler;
 extern const struct xattr_handler v9fs_xattr_acl_access_handler;
 extern const struct xattr_handler v9fs_xattr_acl_default_handler;
+#endif
+extern struct xattr_handler v9fs_xattr_user_handler;
 
 extern ssize_t v9fs_fid_xattr_get(struct p9_fid *, const char *,
 				  void *, size_t);
