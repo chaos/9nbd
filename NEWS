@@ -1,3 +1,6 @@
+In v9fs-2.6.38.5-20:
+* Get xattr and posix acl support working
+
 In v9fs-2.6.38.5-19:
 * [block/9nbd] fix bug that caused munge auth to fail sometimes
 
