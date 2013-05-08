@@ -6,6 +6,7 @@ In v9fs-2.6.38.5-21:
 * Backport [PATCH 4/4] 9P: Fix race between p9_write_work() and p9_fd_request()
 * Backport 9P : Check errno validity
 * Backport fs/9p: Don't use O_TRUNC flag in TOPEN and TLOPEN request
+* Backport locking in fs/9p ->readdir()
 
 In v9fs-2.6.38.5-20:
 * Get xattr and posix acl support working
