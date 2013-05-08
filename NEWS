@@ -1,6 +1,7 @@
 In v9fs-2.6.38.5-21:
 * Backport fs/9p: avoid debug OOPS when reading a long symlink
 * Backport [PATCH 1/4] 9P: Fix race in p9_read_work()
+* Backport [PATCH 2/4] 9P: fix test at the end of p9_write_work()
 
 In v9fs-2.6.38.5-20:
 * Get xattr and posix acl support working
