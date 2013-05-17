@@ -65,6 +65,7 @@ struct p9_fd_opts {
 	int rfd;
 	int wfd;
 	u16 port;
+	int privport;
 };
 
 /**
@@ -89,12 +90,15 @@ struct p9_trans_fd {
 enum {
 	/* Options that take integer arguments */
 	Opt_port, Opt_rfdno, Opt_wfdno, Opt_err,
+	/* Options that take no arguments */
+	Opt_privport,
 };
 
 static const match_table_t tokens = {
 	{Opt_port, "port=%u"},
 	{Opt_rfdno, "rfdno=%u"},
 	{Opt_wfdno, "wfdno=%u"},
+	{Opt_privport, "privport"},
 	{Opt_err, NULL},
 };
 
@@ -162,6 +166,9 @@ static void p9_poll_workfn(struct work_struct *work);
 static DEFINE_SPINLOCK(p9_poll_lock);
 static LIST_HEAD(p9_poll_pending_list);
 static DECLARE_WORK(p9_poll_work, p9_poll_workfn);
+
+const int p9_ipport_resv_min = 665;
+const int p9_ipport_resv_max = 800;
 
 static void p9_mux_poll_stop(struct p9_conn *m)
 {
@@ -743,6 +750,7 @@ static int parse_opts(char *params, struct p9_fd_opts *opts)
 	opts->port = P9_PORT;
 	opts->rfd = ~0;
 	opts->wfd = ~0;
+	opts->privport = 0;
 
 	if (!params)
 		return 0;
@@ -761,7 +769,7 @@ static int parse_opts(char *params, struct p9_fd_opts *opts)
 		if (!*p)
 			continue;
 		token = match_token(p, tokens, args);
-		if (token != Opt_err) {
+		if (token != Opt_err && token != Opt_privport) {
 			r = match_int(&args[0], &option);
 			if (r < 0) {
 				P9_DPRINTK(P9_DEBUG_ERROR,
@@ -771,6 +779,9 @@ static int parse_opts(char *params, struct p9_fd_opts *opts)
 			}
 		}
 		switch (token) {
+		case Opt_privport:
+			opts->privport = 1;
+			break;
 		case Opt_port:
 			opts->port = option;
 			break;
@@ -920,6 +931,23 @@ static inline int valid_ipaddr4(const char *buf)
 	return 0;
 }
 
+static int p9_bind_privport (struct socket *sock)
+{
+	struct sockaddr_in cl;
+	int port, err = -EINVAL;
+
+	memset(&cl, 0, sizeof (cl));
+	cl.sin_family = AF_INET;
+	cl.sin_addr.s_addr = INADDR_ANY;
+	for (port = p9_ipport_resv_max; port >= p9_ipport_resv_min; port--) {
+		cl.sin_port = htons((ushort)port);
+		err = kernel_bind(sock, (struct sockaddr *)&cl, sizeof (cl));
+		if (err != -EADDRINUSE)
+			break;
+	}
+	return err;
+}
+
 static int
 p9_fd_create_tcp(struct p9_client *client, const char *addr, char *args)
 {
@@ -945,6 +973,16 @@ p9_fd_create_tcp(struct p9_client *client, const char *addr, char *args)
 	if (err) {
 		P9_EPRINTK(KERN_ERR, "p9_trans_tcp: problem creating socket\n");
 		return err;
+	}
+
+	if (opts.privport) {
+		err = p9_bind_privport (csocket);
+		if (err < 0) {
+			P9_EPRINTK(KERN_ERR,
+				"p9_trans_tcp: problem binding to privport");
+			sock_release(csocket);
+			return err;
+		}
 	}
 
 	err = csocket->ops->connect(csocket,
