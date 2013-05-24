@@ -226,147 +226,6 @@ error:
 	return err;
 }
 
-static int _get_munge_cred(uid_t uid, gid_t gid, void **dp, int *lp)
-{
-	const struct cred *old_cred;
-	struct cred *override_cred;
-	struct key *key = NULL;
-	struct user_key_payload *ukp;
-	void *data, *cpy = NULL;
-	int len;
-	int err = 0;
-
-	override_cred = prepare_creds();
-	if (!override_cred)
-		return -ENOMEM;
-	override_cred->fsuid = uid;
-	override_cred->fsgid = gid;
-	old_cred = override_creds(override_cred);
-
-	key = request_key(&key_type_user, "munge", "");
-	if (IS_ERR(key)) {
-		err = PTR_ERR(key);
-		key = NULL;
-		dprintk(DBG_AUTH, "auth: request_key failed (%d)\n", err);
-		goto error;
-	}
-
-	down_read(&key->sem);
-	ukp = key->payload.data;
-	if (IS_ERR_OR_NULL(ukp)) {
-		err = ukp ? PTR_ERR(ukp) : -EINVAL;
-		dprintk(DBG_AUTH, "auth: payload error (%d)\n", err);
-		goto error_unlock;
-	}
-	data = ukp->data;
-	len = ukp->datalen;
-	if (len == 0) {
-		dprintk(DBG_AUTH, "auth: payload empty\n");
-		err = -EINVAL;
-		goto error_unlock;
-	}
-	cpy = kmalloc (len, GFP_KERNEL);
-	if (!cpy) {
-		dprintk(DBG_AUTH, "auth: out of memory\n");
-		err = -ENOMEM;
-		goto error_unlock;
-	}
-	memcpy(cpy, data, len);
-	up_read(&key->sem);
-	key_revoke(key); /* munge creds are one time use */
-	key_put(key);
-	*dp = cpy;
-	*lp = len;
-	return 0;
-
-error_unlock:
-	up_read(&key->sem);
-error:
-	if (cpy)
-		kfree(cpy);
-	if (key) {
-		key_revoke(key); /* munge creds are one time use */
-		key_put(key);
-	}
-	revert_creds(old_cred);
-	put_cred(override_cred);
-	return err;	
-}
-
-static int plan9_auth_munge(struct session_struct *sp, uid_t uid,
-			    struct p9_fid *afid)
-{
-	void *data = NULL;
-	int err, n, len = 0, offset = 0;
-
-	dprintk(DBG_AUTH, "auth: obtaining munge cred (%d:%d)\n", uid, uid);
-	err = _get_munge_cred (uid, (gid_t)uid, &data, &len);
-	if (err < 0)
-		goto error;
-	dprintk(DBG_AUTH, "auth: writing munge cred (%d bytes)\n", len);
-	do {
-		session_busy(sp);
-		n = p9_client_write(afid, data + offset, NULL, offset,
-				    len - offset);
-		if (n < 0) {
-			err = n;
-			goto error;
-		}
-		if (session_idle(sp) < 0) {
-			err = -ETIMEDOUT;
-			goto error;
-		}
-		offset += n;
-	} while (offset < len);
-	dprintk(DBG_AUTH, "auth: munge cred transmitted\n");
-	kfree(data);
-	return 0;
-error:
-	if (data)
-		kfree(data);
-	return -1;
-}	
-
-static int plan9_auth(struct session_struct *sp, struct p9_client *clnt,
-		      uid_t uid, char *aname, struct p9_fid **fp)
-{
-	struct p9_nbd_device *nbd = sp->nbd;
-	struct p9_fid *afid = NULL;
-	int err;
-
-	dprintk(DBG_PLAN9, "%s: p9_client_auth %s\n", nbd->disk->disk_name,
-		aname);
-	session_busy(sp);
-	afid = p9_client_auth(clnt, NULL, uid, aname);
-	if (IS_ERR(afid)) {
-		err = PTR_ERR(afid);
-		afid = NULL;
-		if (err != -ENOENT) {
-			dprintk(DBG_AUTH, "auth: request failed (%d)\n", err);
-			goto error;
-		}
-		dprintk(DBG_AUTH, "auth: server doesn't require auth\n");
-	}
-	if (session_idle(sp) < 0) {
-		err = -ETIMEDOUT;
-		goto error;
-	}
-	if (afid) {
-		err = plan9_auth_munge(sp, uid, afid);
-		if (err < 0) {
-			dprintk(DBG_AUTH, "auth: munge hanshake failed (%d)\n",
-				err);
-			goto error;
-		}
-	}
-	*fp = afid;
-	return 0;
-error:
-	if (afid)
-		p9_client_clunk(afid);
-	return err;
-}
-
 static int plan9_attach(struct session_struct *sp, struct p9_client *clnt,
 			struct p9_fid *afid, uid_t uid, char *aname,
 			struct p9_fid **fp)
@@ -619,8 +478,6 @@ static int session_thread(void *data)
 	int err;
 	uid_t uid = 0;
 	char *aname = NULL;
-	int auth = 0;
-	char *authtype = NULL;
 
 	set_user_nice(current, -20);
 
@@ -632,17 +489,10 @@ static int session_thread(void *data)
 	if (err < 0)
 		goto fail;
 	(void)plan9_parseopt_int(nbd->p9_opts, "uid", &uid);
-	if (plan9_parseopt_str(nbd->p9_opts, "auth", &authtype) == 0) {
-		if (!strcmp(authtype, "munge"))
-			auth = 1;
-		kfree(authtype);
-	}
 
 	dprintk(DBG_RECOV, "%s/ses%d: start\n", nbd->disk->disk_name, sp->num);
 
 	if (plan9_create(sp, &clnt) < 0)
-		goto fail;
-	if (auth && plan9_auth(sp, clnt, uid, aname, &afid) < 0)
 		goto fail;
 	if (plan9_attach(sp, clnt, afid, uid, aname, &fid) < 0)
 		goto fail;
