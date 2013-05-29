@@ -1,6 +1,7 @@
 EXTRA_CFLAGS := \
 	-DCONFIG_NET_9P_DEBUG=1 \
 	-DCONFIG_9P_FS_POSIX_ACL=1 \
+	-DCONFIG_9P_FS_SECURITY=1 \
 	-I$(src)/include/net/9p \
 	-I$(src)/include \
 	-include $(src)/rhel6-compat.h \
@@ -32,6 +33,7 @@ obj-m := 9pnet.o 9p.o 9pnet_rdma.o 9nbd.o
 # CONFIG_9P_FS
 # CONFIG_9P_FSCACHE
 # CONFIG_9P_FS_POSIX_ACL
+# CONFIG_9P_FS_SECURITY
 
 9p-objs := \
 	v9fs/vfs_super.o \
@@ -45,6 +47,8 @@ obj-m := 9pnet.o 9p.o 9pnet_rdma.o 9nbd.o
 	v9fs/fid.o \
 	v9fs/xattr.o \
 	v9fs/xattr_user.o \
+	v9fs/xattr_security.o \
+	v9fs/xattr_trusted.o \
 	v9fs/acl.o
 
 9nbd-objs := \
