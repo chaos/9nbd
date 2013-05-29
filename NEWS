@@ -1,3 +1,7 @@
+In v9fs-2.6.38.5-23:
+* add trusted.* and security.* xattr support
+* remove MUNGE support from 9nbd (prep for upstream)
+
 In v9fs-2.6.38.5-22:
 * add privport option for trans=tcp
 
