@@ -95,9 +95,10 @@ static int session_idle_getreq(struct session_struct *sp, struct request **rp);
 static int session_idle_setsize(struct session_struct *sp, u64 filesize);
 static void session_fail(struct session_struct *sp);
 
-static unsigned int nbds_max = 16;
+static unsigned int max_devs = 4;
 static struct p9_nbd_device *nbd_dev;
 static int max_part;
+static int nbd_major = 0;
 
 /*
  * Use just one lock (or at most 1 per NIC). Two arguments for this:
@@ -1029,7 +1030,7 @@ static int __init nbd_init(void)
 		return -EINVAL;
 	}
 
-	nbd_dev = kcalloc(nbds_max, sizeof(*nbd_dev), GFP_KERNEL);
+	nbd_dev = kcalloc(max_devs, sizeof(*nbd_dev), GFP_KERNEL);
 	if (!nbd_dev)
 		return -ENOMEM;
 
@@ -1051,10 +1052,10 @@ static int __init nbd_init(void)
 	if ((1UL << part_shift) > DISK_MAX_PARTS)
 		return -EINVAL;
 
-	if (nbds_max > 1UL << (MINORBITS - part_shift))
+	if (max_devs > 1UL << (MINORBITS - part_shift))
 		return -EINVAL;
 
-	for (i = 0; i < nbds_max; i++) {
+	for (i = 0; i < max_devs; i++) {
 		struct gendisk *disk = alloc_disk(1 << part_shift);
 		if (!disk)
 			goto out;
@@ -1075,15 +1076,15 @@ static int __init nbd_init(void)
 		queue_flag_set_unlocked(QUEUE_FLAG_NONROT, disk->queue);
 	}
 
-	if (register_blkdev(NBD_MAJOR, "nbd")) {
-		err = -EIO;
+	if ((nbd_major = register_blkdev(0, "9nbd")) < 0) {
+		err = nbd_major;
 		goto out;
 	}
 
-	printk(KERN_INFO "9nbd: registered device at major %d\n", NBD_MAJOR);
+	printk(KERN_INFO "9nbd: registered device at major %d\n", nbd_major);
 	dprintk(DBG_INIT, "9nbd: debugflags=0x%x\n", debugflags);
 
-	for (i = 0; i < nbds_max; i++) {
+	for (i = 0; i < max_devs; i++) {
 		struct gendisk *disk = nbd_dev[i].disk;
 		nbd_dev[i].magic = NBD_MAGIC;
 		nbd_dev[i].flags = 0;
@@ -1098,11 +1099,11 @@ static int __init nbd_init(void)
 		nbd_dev[i].p9_path = NULL;
 		nbd_dev[i].recov_kt = NULL;
 		init_waitqueue_head(&nbd_dev[i].recov_wq);
-		disk->major = NBD_MAJOR;
+		disk->major = nbd_major;
 		disk->first_minor = i << part_shift;
 		disk->fops = &nbd_fops;
 		disk->private_data = &nbd_dev[i];
-		sprintf(disk->disk_name, "nbd%d", i);
+		sprintf(disk->disk_name, "9nbd%d", i);
 		set_capacity(disk, 0);
 		add_disk(disk);
 	}
@@ -1120,7 +1121,7 @@ out:
 static void __exit nbd_cleanup(void)
 {
 	int i;
-	for (i = 0; i < nbds_max; i++) {
+	for (i = 0; i < max_devs; i++) {
 		struct gendisk *disk = nbd_dev[i].disk;
 		nbd_dev[i].magic = 0;
 		if (disk) {
@@ -1137,9 +1138,9 @@ static void __exit nbd_cleanup(void)
 		if (nbd_dev[i].p9_path)
 			kfree(nbd_dev[i].p9_path);
 	}
-	unregister_blkdev(NBD_MAJOR, "nbd");
+	unregister_blkdev(nbd_major, "9nbd");
 	kfree(nbd_dev);
-	printk(KERN_INFO "9nbd: unregistered device at major %d\n", NBD_MAJOR);
+	printk(KERN_INFO "9nbd: unregistered device at major %d\n", nbd_major);
 }
 
 module_init(nbd_init);
@@ -1148,8 +1149,8 @@ module_exit(nbd_cleanup);
 MODULE_DESCRIPTION("Network Block Device");
 MODULE_LICENSE("GPL");
 
-module_param(nbds_max, int, 0444);
-MODULE_PARM_DESC(nbds_max, "number of network block devices to initialize (default: 16)");
+module_param(max_devs, int, 0444);
+MODULE_PARM_DESC(max_devs, "number of block devices to initialize (default: 16)");
 module_param(max_part, int, 0444);
 MODULE_PARM_DESC(max_part, "number of partitions per device (default: 0)");
 #ifndef NDEBUG
