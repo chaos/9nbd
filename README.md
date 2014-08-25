@@ -12,8 +12,8 @@ an RPM named `kmod-v9fs`.
 
 `block/9nbd` contains a network block device driver that leverages
 in-kernel 9P transport support, and thus can use all of the transport
-features offered by 9P, and can be served by battle-hardened 9p server
+features offered by 9P, and can be served by battle-hardened 9p servers
 such as _diod_.
 
 A more detailed write-up on 9nbd is available on the
-[diod NBD wiki page](http://code.google.com/p/diod/wiki/9NBD).
+[diod 9NBD wiki page](http://code.google.com/p/diod/wiki/9NBD).
