@@ -3,7 +3,7 @@ Version:
 Release:
 Source0:
 
-Summary: 9P File System
+Summary: 9P Network Block Device
 Packager: Jim Garlick <garlick@llnl.gov>
 License: GPL
 Group: System Environment/Base
@@ -16,19 +16,19 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 9P File System
 
 #  kmod package will be named kmod-{kmod_name}
-%define kmod_name v9fs
+%define kmod_name 9nbd
 
 %define debug_package %{nil}
 
 # Work around for total inflexibility of kernel_module_package -f argument.
-#  we have to ensure kmod-v9fs.list is available now since macros
+#  we have to ensure kmod-9nbd.list is available now since macros
 #  are expanded on RPM parsing:
 %(/bin/echo -e "\
 %defattr(644,root,root,755)\n\
 /lib/modules/%2-%1\n\
-/etc/depmod.d/kmod-v9fs.conf" >%{_sourcedir}/kmod-v9fs.list)
+/etc/depmod.d/kmod-9nbd.conf" >%{_sourcedir}/kmod-9nbd.list)
 
-# Generate section for kmod-v9fs subpackage:
+# Generate section for kmod-9nbd subpackage:
 %kernel_module_package -f %{_sourcedir}/kmod-%{name}.list
 
 %define kdir %{_usrsrc}/kernels/%{kverrel}
