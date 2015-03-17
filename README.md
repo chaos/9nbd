@@ -2,106 +2,104 @@
 
 `9nbd` is a network block device driver for the linux kernel.
 
-The network block device (nbd) driver that has been in the Linux kernel for
-some time associates a block special file (`/dev/nbdX`) with a remote file
-or block device. A local file system image (like ext4) in the file or block
-device can be mounted just like it were on a local disk on the client.
-The nbd server runs in user space. The client and server communicate using
-a purpose-built TCP protocol.
+The [nbd driver](http://en.wikipedia.org/wiki/Network_block_device)
+that has been in the Linux kernel since 2.1.101 associates a block
+special file, `/dev/nbdX`, with a remote file or block device.
+A remote file system image is mounted from a block device backed
+by `nbd` just as from a block device backed by a local disk.
+`nbd-server` runs in user space and communicates with `nbd`
+using a purpose-built TCP protocol.
 
-In `9nbd`, the protocol is replaced with 9P. The server can be
-[diod](https://github.com/chaos/diod) or another 9P server.
-Resiliency and strong authentication are added on top of 9P.
-The 9P protocol engine and transports already in the kernel are
-leveraged, simplifying the network block device implementation.
+`9nbd` is a replacement for `nbd` that uses the 9P transport instead
+of the purpose-built TCP protocol.  9P has the advantage of
+abstracting the protocol away from the network block device
+implementation; leveraging a proven design and implementation;
+supporting TCP, Infiniband RDMA, virtio, and file descriptor passing;
+and allowing any 9P server,
+[diod](https://github.com/chaos/diod) for example, to serve
+file system images.
 
-### Why is 9nbd needed?
+In addition, for read-only block device images, `9nbd` has the ability
+to survive a server reboot and, if configured, to fail over to an alternate
+server that has the identical block device image, without returning
+errors in the block layer.   `9nbd` behavior in this regard is similar
+to the familiar NFS client, except for the client-orchestrated failover
+which goes beyond NFS client capabilities.
 
-Diod began as an I/O forwarding project for clusters. One planned use is
-to improve application load times by mounting NFS servers on I/O nodes,
-then remounting them on compute nodes with a 1:64 or so fanout.
-During a parallel exec or other type of read, data is read from the
-NFS server into the I/O node page cache on first access and is
-subsequently served out of cache.
+### Scalability
 
-Two issues subvert this plan. One is the v9fs `cache=none` behavior, i.e.
-total reliance on the I/O node page and dentry cache, which adds latency
-to every operation. The other, compounded by the first, is the fact that
-path search on compute nodes is synchronous (one directory at a time),
-and for new names, always involves a round trip to the NFS server for
-each directory searched.  The NFS cache revalidation behavior further
-confounds performacne.
+On clusters, serving read-only root file systems with a network block
+device really shines.  Specifically, the inability of network file systems
+like NFS and Lustre to cache full directories creates an environment
+that is pathalogical for common idioms such as path search.  With
+a network block device, the buffer cache is active, and buffer cache
+entries never need to be invalidated.  This means the network can be
+_dead silent_ while an application is running or when loading shared
+libraries or searching for executables after a working set has been
+pulled in.
 
-Intuitively one might expect the I/O node dcache to help here, and it
-does with negative and positive dentries, but of course unless a name
-has been looked up before, it cannot have a dentry, and applications
-with many moving parts can look up a large number of new names from
-essentially a cold cache. What is really needed is the buffer cache,
-which would allow the full content of the directories being searched to
-enter cache.
+### Security
 
-If one can manage to place the content formerly stored in NFS in a local
-file system image and share it read-only, the buffer cache can be used.
-For example, store a squashfs image as a single file in NFS; mount NFS
-on I/O nodes; re-export via diod to compute nodes; set up 9nbd block device
-on compute node; mount squashfs on compute node.
+The 9P transport can use a privileged port if desired, and servers
+such as `diod` can restrict access based on that and an access list.
+The 9P AUTH mechanism is available for extending this at the transport
+level.  At LLNL we have experimented with MUNGE authentication over 9P,
+though this is not currently implemented in `9nbd`.
 
-Now the buffer cache comes into play on compute nodes, dramatically
-speeding up path search, and for that matter all metadata operations.
-Content of the file also enters the page cache on I/O forwarding nodes.
+### Diskless
 
-The end result performs extremely well, eliminating a significant amount
-of network traffic when compared with both direct and forwarded NFS.
-The main catch is the need to place the content in a read-only container.
+`9nbd` works great for root file systems.  More details will appear here
+as we integrate `9nbd` with dracut in our RHEL 7 based clusters.
 
-### Resiliency
+### Quick How-to
 
-`nbd` offers reconnection on server disconnect but does not shield clients
-from I/O errors that might result during reconnection. Recovery behavior
-from block level I/O errors is file system dependent, and for any given
-file system, varies depending on what type of file system object is
-involved. It can be fatal or it might hand an I/O error to an application.
-Either is unacceptable in a parallel environment where cascading errors
-can be difficult to debug and restarting is expensive.
+Create a 4GB disk image image, bound to a loopback device:
+```
+# dd if=/dev/zero of=/tmp/image bs=4k count=$((1024*1024))
+1048576+0 records in
+1048576+0 records out
+4294967296 bytes (4.3 GB) copied, 32.3354 s, 133 MB/s
+# losetup /dev/loop0 /tmp/image
+```
 
-The in-kernel 9P transport does not offer resiliency, and the 9P protocol
-design offers no help. General purpose resiliency in 9P is complicated
-by the fact that the server carries per-connection state that would
-have to be re-established on a reconnect. That is why v9fs just gives
-up when the transport gets an error and the only recourse is to
-unmount/remount. It is also possible for the transport to hang forever
-if a request is not answered but the connection is not completely torn down.
+Create an ext4 file system on it:
+```
+# yes | mkfs.ext4 -m 0 -N 1000000 /dev/loop0
+mke2fs 1.41.12 (17-May-2010)
+Filesystem label=
+...
+180 days, whichever comes first.  Use tune2fs -c or -i to override.
 
-For `9nbd` with read-only block devices, it is fairly simple to add a
-layer of resiliency on top of the 9P transport since all we are doing is
-accessing a single file. We spawn a kernel thread for each 9P connection,
-and if a 9P request ever fails or times out, we abort the original thread,
-start a new one, and reissue the request. We can even connect to a
-different server as long as it is serving the same file content.
+# tune2fs -i 0 /dev/loop0
+tune2fs 1.41.12 (17-May-2010)
+Setting interval between checks to 0 seconds
 
-For read-write block devices, recovery is more complicated due to write
-ordering constraints, write barriers, etc., but since sharing a local
-file system image requires that the contents remain static, `9nbd` only
-supports recovery for read-only block devices.
+# tune2fs -O ^has_journal,sparse_super /dev/loop0
+tune2fs 1.41.12 (17-May-2010)
 
-### MUNGE Security
+# fsck.ext4 -y /dev/loop0
+e2fsck 1.41.12 (17-May-2010)
+/dev/loop0: clean, 11/1000448 files, 64654/1048576 blocks
+```
+Mount `/dev/loop0` and copy in content, then unmount.
+The file system image should not be exposed to writes while it is
+being served as a network block device.
 
-diod accepts MUNGE authentication, and for the `v9fs` file system client,
-the diod mount helper achieves this by connecting to the server in user
-space, performing an AUTH on the connect, then handing the connected
-(and authenticated) file descriptor in to the kernel 9P transport at
-mount time. This doe not work with `9nbd` since the kernel must be able
-to reconnect on its own during recovery.
+Export the image via `diod` by adding it to `/etc/diod.conf`.
+```
+exports = {
+    { path="/tmp/image",  opts="ro,noauth" }
+}
+```
+then `service diod reload`.
 
-It turns out that obtaining munge credentials in the kernel is easy with
-the kernel keyring service. The kernel calls out to user space to
-generate a credential at connect time, sends it, then immediately
-destroys it since munge creds are one-time use only. This required
-support for the 9P AUTH message to be re-added to the kernel 9P
-transport code (it had been removed in a fit of overzealous cleanup
-since nothing was using it). The munge-specific code for I/O on
-the resulting afid is part of 9nbd, though it probably should be moved
-into the transport.
-
-Some setup in `/etc/request-key.conf` is required to facilitate the
-kernel upcall.
+Load the `9nbd` module on the client, instantiate the block device entry,
+and mount the remote file system.
+```
+insmod ./9nbd.ko
+/sbin/mount.diod --9nbd-attach host:path /dev/9nbd0
+mount -oro /dev/9nbd0 /mnt
+...
+umount /mnt
+/sbin/mount.diod --9nbd-detach /dev/9nbd0
+```
