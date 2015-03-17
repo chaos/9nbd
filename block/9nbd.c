@@ -228,7 +228,7 @@ error:
 }
 
 static int plan9_attach(struct session_struct *sp, struct p9_client *clnt,
-			struct p9_fid *afid, uid_t uid, char *aname,
+			struct p9_fid *afid, kuid_t uid, char *aname,
 			struct p9_fid **fp)
 {
 	struct p9_nbd_device *nbd = sp->nbd;
@@ -477,7 +477,7 @@ static int session_thread(void *data)
 	u32 bufsize = (u32)BLK_SAFE_MAX_SECTORS << 9;
 	struct request *req;
 	int err;
-	uid_t uid = 0;
+	int uid = 0;
 	char *aname = NULL;
 
 	set_user_nice(current, -20);
@@ -495,7 +495,8 @@ static int session_thread(void *data)
 
 	if (plan9_create(sp, &clnt) < 0)
 		goto fail;
-	if (plan9_attach(sp, clnt, afid, uid, aname, &fid) < 0)
+	if (plan9_attach(sp, clnt, afid, make_kuid (current_user_ns (), uid),
+							aname, &fid) < 0)
 		goto fail;
 	if (plan9_walk(sp, fid) < 0)
 		goto fail;
@@ -930,15 +931,8 @@ static int __nbd_ioctl(struct block_device *bdev, struct p9_nbd_device *nbd,
 
 		if (nbd->recov_kt)
 			return -EBUSY;
-		if (max_part > 0) {
-#if RHEL6_COMPAT
-			mutex_lock(&bdev->bd_mutex);
-			bdev->bd_disk->flags |= GENHD_FL_INVALIDATED;
-			mutex_unlock(&bdev->bd_mutex);
-#else
+		if (max_part > 0)
 			bdev->bd_invalidated = 1;
-#endif
-		}
 		nbd->recov_kt = kthread_run(recov_thread, nbd,
 					    "%s/recov", nbd->disk->disk_name);
 		if (IS_ERR(nbd->recov_kt)) {
