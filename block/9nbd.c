@@ -3,7 +3,7 @@
  *
  * Note that you can not swap over this thing, yet. Seems to work but
  * deadlocks sometimes - you can not swap over TCP in general.
- * 
+ *
  * 9P support added by Jim Garlick <garlick@llnl.gov>
  * Copyright 1997-2000, 2008 Pavel Machek <pavel@ucw.cz>
  * Parts copyright 2001 Steven Whitehouse <steve@chygwyn.com>
@@ -75,7 +75,7 @@ typedef enum {
 } session_state_t;
 
 struct session_struct {
-	struct task_struct *kt;		
+	struct task_struct *kt;
 	struct p9_nbd_device *nbd;
 	session_state_t state;
 	unsigned long start;	/* jiffies when session became busy */
@@ -234,7 +234,7 @@ static int plan9_attach(struct session_struct *sp, struct p9_client *clnt,
 	struct p9_nbd_device *nbd = sp->nbd;
 	struct p9_fid *fid = NULL;
 	int err;
-	
+
 	dprintk(DBG_PLAN9, "%s: p9_client_attach %s\n", nbd->disk->disk_name,
 		aname);
 	session_busy(sp);
@@ -347,7 +347,7 @@ static int plan9_request (struct session_struct *sp, struct p9_fid *fid,
 {
 	u64 off = (u64)blk_rq_pos(req) << 9;
 	int dir = rq_data_dir(req);
-	int len = blk_rq_bytes(req);	
+	int len = blk_rq_bytes(req);
 	int n, tot = 0, err = 0;
 
 	if (dir == WRITE)
@@ -524,7 +524,7 @@ static int session_thread(void *data)
 
 		/* Dequeue request at head of block request queue.
 		 * Dispense with it immediately if it requires no I/O.
- 		 */
+		 */
 		req = NULL;
 		spin_lock_irq(&nbd->queue_lock);
 		if (!list_empty(&nbd->waiting_queue)) {
@@ -546,7 +546,7 @@ static int session_thread(void *data)
 		}
 
 		/* Perform the 9p request.
- 		 */
+		 */
 		BUG_ON(blk_rq_bytes(req) > bufsize);
 		if (plan9_request (sp, fid, buf, req, &err) < 0)
 			goto fail;
@@ -845,7 +845,7 @@ static int recov_thread(void *data)
 static void do_nbd_request(struct request_queue *q)
 {
 	struct request *req;
-	
+
 	while ((req = blk_fetch_request(q)) != NULL) {
 		struct p9_nbd_device *nbd;
 
@@ -941,7 +941,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct p9_nbd_device *nbd,
 			return err;
 		}
 		/* Wait for session to connect and obtain device size
- 		 * with a 9P getattr call.
+		 * with a 9P getattr call.
 		 */
 		do {
 			err = wait_event_interruptible(nbd->recov_wq,
@@ -1009,7 +1009,7 @@ static const struct block_device_operations nbd_fops =
 };
 
 /*
- * And here should be modules and kernel interface 
+ * And here should be modules and kernel interface
  *  (Just smiley confuses emacs :-)
  */
 
